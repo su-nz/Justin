@@ -1,0 +1,546 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Smart Bin 成品模型</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@500;700&family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: 3D street scene fills the stage; a device-console panel on the right (bottom on phones); action bar floats over the scene. Single night-street look, deliberately dark. */
+:root{
+  color-scheme: dark;
+  --bg:#0b1215; --stage:#0e171b; --panel:#111b1f; --line:#22333a; --fg:#e7eee9; --muted:#8fa49c;
+  --accent:#4cc38a; --accent-ink:#0b1a12; --warn:#f0a23b; --crit:#f06b5b; --cam:#5fd0e6;
+  --f-display:'Lexend','Noto Sans TC',system-ui,sans-serif;
+  --f-body:'Noto Sans TC',system-ui,-apple-system,sans-serif;
+  --f-mono:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;
+}
+html,body{height:100%}
+body{background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:14px;overflow:hidden}
+#app{height:100%;display:grid;grid-template-columns:minmax(0,1fr) 360px;grid-template-rows:minmax(0,1fr)}
+#stage{position:relative;min-width:0;min-height:0;background:var(--stage)}
+#stage canvas{display:block;width:100%;height:100%;outline:none}
+.brand{position:absolute;top:calc(14px + env(safe-area-inset-top,0px));left:max(16px,env(safe-area-inset-left,0px));pointer-events:none;display:grid;gap:2px}
+.brand b{font-family:var(--f-display);font-size:18px;letter-spacing:.2px}
+.brand span{color:var(--muted);font-size:12px;letter-spacing:.4px}
+#labels{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.tag{position:absolute;left:0;top:0;display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:12px;color:var(--fg);transform:translate(-4px,-50%)}
+.tag i{width:7px;height:7px;border-radius:50%;background:var(--fg);box-shadow:0 0 0 3px rgba(231,238,233,.18);flex:none}
+.tag span{background:rgba(11,18,21,.78);border:1px solid var(--line);padding:3px 7px;border-radius:6px}
+.tag.det span{font-family:var(--f-mono);border-color:currentColor}
+.controls{position:absolute;left:max(16px,env(safe-area-inset-left,0px));right:16px;bottom:calc(14px + env(safe-area-inset-bottom,0px));display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.controls .sep{width:1px;height:26px;background:var(--line);margin:0 4px}
+button{font:500 13px/1 var(--f-body);color:var(--fg);background:rgba(17,27,31,.9);border:1px solid var(--line);border-radius:8px;padding:9px 12px;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
+button:hover{border-color:#3b545c}
+button:focus-visible{outline:2px solid var(--cam);outline-offset:2px}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+button.danger{border-color:#6a3a33;color:#ffd2cb}
+button[aria-pressed="true"]{border-color:var(--cam);color:var(--cam)}
+button:disabled{opacity:.45;cursor:default}
+aside{border-left:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;min-height:0;padding-block:calc(18px + env(safe-area-inset-top,0px)) calc(14px + env(safe-area-inset-bottom,0px));padding-left:20px;padding-right:max(20px,env(safe-area-inset-right,0px));gap:18px}
+.eyebrow{font-size:11px;letter-spacing:1.6px;text-transform:uppercase;color:var(--muted)}
+.binname{display:grid;gap:3px}
+.binname b{font-size:16px;font-weight:700}
+.binname span{font-family:var(--f-mono);font-size:12px;color:var(--muted)}
+.fill{display:grid;gap:8px}
+.fill .num{font-family:var(--f-display);font-weight:700;font-size:56px;line-height:1;font-variant-numeric:tabular-nums}
+.fill .num small{font-size:22px;color:var(--muted);margin-left:2px}
+.bar{position:relative;height:10px;border-radius:5px;background:#1b292e;overflow:visible}
+.bar>div{height:100%;border-radius:5px;background:var(--accent);transition:width .4s,background .4s}
+.bar .tick{position:absolute;top:-4px;bottom:-4px;width:1px;background:var(--muted)}
+.bar .tick::after{content:attr(data-l);position:absolute;top:16px;left:50%;transform:translateX(-50%);font:10px var(--f-mono);color:var(--muted)}
+.facts{display:grid;grid-template-columns:auto 1fr;gap:9px 14px;align-items:center;margin-top:6px}
+.facts dt{color:var(--muted);font-size:12px}
+.facts dd{margin:0;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.pill{font-size:12px;font-weight:500;padding:3px 9px;border-radius:999px;border:1px solid currentColor}
+.ok{color:var(--accent)} .warn{color:var(--warn)} .crit{color:var(--crit)} .cam{color:var(--cam)} .mute{color:var(--muted)}
+.logwrap{display:flex;flex-direction:column;gap:8px;min-height:0;flex:1}
+#log{list-style:none;margin:0;padding:0;overflow:auto;display:flex;flex-direction:column;gap:6px;font-family:var(--f-mono);font-size:11.5px;line-height:1.45;min-height:0}
+#log li{display:grid;grid-template-columns:40px 42px 1fr;gap:6px;padding-bottom:6px;border-bottom:1px solid #18262b}
+#log time{color:var(--muted)}
+#log .src{color:var(--muted)}
+.note{font-size:11.5px;color:var(--muted);line-height:1.5}
+@media (max-width:760px){
+  #app{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,58%) minmax(0,42%)}
+  aside{border-left:none;border-top:1px solid var(--line);padding-top:14px;gap:12px;overflow:auto}
+  .fill .num{font-size:40px}
+  .controls{gap:6px} button{padding:8px 10px;font-size:12px}
+  .controls .sep{display:none}
+  .brand b{font-size:15px}
+}
+@media (prefers-reduced-motion:reduce){.bar>div{transition:none}}
+</style>
+
+<div id="app">
+  <div id="stage">
+    <div class="brand"><b>Smart Bin 成品模型</b><span>夾掛式感測 × 邊緣視覺閘門 · 互動模擬</span></div>
+    <div id="labels"></div>
+    <div class="controls" role="toolbar" aria-label="模擬操作">
+      <button id="b-cup" class="primary">投入飲料杯</button>
+      <button id="b-bag" class="danger">投入家用垃圾袋</button>
+      <button id="b-ff">快轉 1 小時</button>
+      <button id="b-collect">清運</button>
+      <span class="sep"></span>
+      <button id="t-cut" aria-pressed="true">剖面</button>
+      <button id="t-label" aria-pressed="true">元件標示</button>
+      <button id="t-fov" aria-pressed="true">攝影機視野</button>
+    </div>
+  </div>
+  <aside aria-label="桶子狀態">
+    <div class="binname"><span class="eyebrow">裝置</span><b>師大路 夜市口</b><span>NTNU-02 · 60 L · 有視覺閘門</span></div>
+    <div class="fill">
+      <span class="eyebrow">滿度（VL53L1X ToF）</span>
+      <div class="num" id="fillnum">62<small>%</small></div>
+      <div class="bar" aria-hidden="true"><div id="fillbar"></div><span class="tick" style="left:75%" data-l="75"></span><span class="tick" style="left:90%" data-l="90"></span></div>
+      <dl class="facts">
+        <dt>狀態</dt><dd id="st"></dd>
+        <dt>市民地圖</dt><dd id="map"></dd>
+        <dt>閘門</dt><dd id="gate"></dd>
+        <dt>地面</dt><dd id="ground"></dd>
+        <dt>模擬時間</dt><dd id="clock" style="font-family:var(--f-mono)"></dd>
+      </dl>
+    </div>
+    <div class="logwrap">
+      <span class="eyebrow">事件與上傳紀錄</span>
+      <ol id="log" aria-live="polite"></ol>
+    </div>
+    <p class="note">示意模型，尺寸與外觀為設計想像。辨識由攝影機晶片完成，只上傳事件標籤，不上傳影像。</p>
+  </aside>
+</div>
+
+<script type="importmap">
+{"imports":{
+  "three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const stage = document.getElementById('stage');
+const $ = id => document.getElementById(id);
+
+// ---------------------------------------------------------------- renderer / scene
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+stage.prepend(renderer.domElement);
+renderer.domElement.setAttribute('aria-label', '智慧垃圾桶 3D 模型，可拖曳旋轉');
+renderer.domElement.tabIndex = 0;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#0e171b');
+scene.fog = new THREE.Fog('#0e171b', 6, 16);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(38, 1, 0.05, 60);
+camera.position.set(1.75, 1.35, 2.15);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.62, 0.1);
+controls.enableDamping = true;
+controls.minDistance = 1.1; controls.maxDistance = 6;
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.autoRotate = !reduce; controls.autoRotateSpeed = 0.35;
+renderer.domElement.addEventListener('pointerdown', () => controls.autoRotate = false);
+
+// lights: dim blue sky, warm street lamp, soft fill
+scene.add(new THREE.HemisphereLight('#7f9fb8', '#1a1410', 0.35));
+const lamp = new THREE.SpotLight('#ffd9a0', 38, 9, 0.62, 0.55, 1.6);
+lamp.position.set(-1.7, 3.2, -0.5);
+lamp.target.position.set(0, 0.4, 0.2);
+lamp.castShadow = true; lamp.shadow.mapSize.set(1024, 1024); lamp.shadow.bias = -0.0004;
+scene.add(lamp, lamp.target);
+const fill = new THREE.DirectionalLight('#9ec3ff', 0.35); fill.position.set(3, 2, 3); scene.add(fill);
+
+// ---------------------------------------------------------------- textures (drawn, no image files)
+function canvasTex(w, h, draw, repeat) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  if (repeat) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(...repeat); }
+  t.anisotropy = 8; return t;
+}
+// Taipei sidewalk: interlocking red-grey bricks
+const brick = canvasTex(512, 512, (g, w, h) => {
+  g.fillStyle = '#3a3533'; g.fillRect(0, 0, w, h);
+  const bw = 64, bh = 32;
+  for (let y = 0; y < h; y += bh) for (let x = -bw; x < w; x += bw) {
+    const off = (y / bh) % 2 ? bw / 2 : 0;
+    const v = 70 + Math.random() * 30;
+    g.fillStyle = `rgb(${v + 28},${v * 0.72},${v * 0.66})`;
+    g.fillRect(x + off + 2, y + 2, bw - 4, bh - 4);
+  }
+}, [6, 6]);
+const asphalt = canvasTex(256, 256, (g, w, h) => {
+  g.fillStyle = '#1b1e20'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 2500; i++) { const v = 20 + Math.random() * 30; g.fillStyle = `rgb(${v},${v},${v + 2})`; g.fillRect(Math.random() * w, Math.random() * h, 1.5, 1.5); }
+}, [10, 3]);
+const trashTex = canvasTex(256, 256, (g, w, h) => {
+  g.fillStyle = '#3b3530'; g.fillRect(0, 0, w, h);
+  const cols = ['#d9d2c5', '#c7a46b', '#7aa0c4', '#c4675a', '#e8e3d8', '#6e8f62', '#b57fb0', '#e0b65a'];
+  for (let i = 0; i < 260; i++) { g.fillStyle = cols[i % cols.length]; g.globalAlpha = 0.55 + Math.random() * 0.45; g.fillRect(Math.random() * w, Math.random() * h, 6 + Math.random() * 18, 4 + Math.random() * 12); }
+}, [3, 2]);
+
+// ---------------------------------------------------------------- street
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(14, 6), new THREE.MeshStandardMaterial({ map: brick, roughness: 0.9 }));
+ground.rotation.x = -Math.PI / 2; ground.position.z = -1.6; ground.receiveShadow = true; scene.add(ground);
+const curb = new THREE.Mesh(new THREE.BoxGeometry(14, 0.12, 0.18), new THREE.MeshStandardMaterial({ color: '#8d8e8a', roughness: 0.8 }));
+curb.position.set(0, 0.0, 1.49); curb.receiveShadow = true; scene.add(curb);
+const road = new THREE.Mesh(new THREE.PlaneGeometry(14, 6), new THREE.MeshStandardMaterial({ map: asphalt, roughness: 0.95 }));
+road.rotation.x = -Math.PI / 2; road.position.set(0, -0.06, 4.58); road.receiveShadow = true; scene.add(road);
+for (let x = -6; x < 7; x += 1.4) { // red no-parking line + dashed lane line
+  const d = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.07), new THREE.MeshBasicMaterial({ color: '#c9c6bb' }));
+  d.rotation.x = -Math.PI / 2; d.position.set(x, -0.055, 3.4); scene.add(d);
+}
+const red = new THREE.Mesh(new THREE.PlaneGeometry(14, 0.08), new THREE.MeshBasicMaterial({ color: '#9b2f2a' }));
+red.rotation.x = -Math.PI / 2; red.position.set(0, -0.055, 1.7); scene.add(red);
+// lamp post
+const steel = new THREE.MeshStandardMaterial({ color: '#2b3236', metalness: 0.6, roughness: 0.5 });
+const post = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 3.25, 16), steel);
+post.position.set(-1.75, 1.62, -0.55); post.castShadow = true; scene.add(post);
+const head = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.06, 0.16), steel); head.position.set(-1.6, 3.24, -0.52); scene.add(head);
+const bulb = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.012, 0.12), new THREE.MeshBasicMaterial({ color: '#ffe2b0' })); bulb.position.set(-1.6, 3.205, -0.52); scene.add(bulb);
+// distant shopfronts for depth
+const shop = canvasTex(512, 256, (g, w, h) => {
+  g.fillStyle = '#121a1e'; g.fillRect(0, 0, w, h);
+  const c = ['#f3c26b', '#e46a5a', '#79c6e8', '#f0e6c8'];
+  for (let i = 0; i < 9; i++) { g.fillStyle = c[i % 4]; g.globalAlpha = 0.25 + Math.random() * 0.35; g.fillRect(i * 58 + 6, 40 + Math.random() * 40, 46, 26 + Math.random() * 60); }
+});
+const shops = new THREE.Mesh(new THREE.PlaneGeometry(12, 3), new THREE.MeshBasicMaterial({ map: shop, fog: true }));
+shops.position.set(0, 1.5, -4.4); scene.add(shops);
+
+// ---------------------------------------------------------------- the bin
+const bin = new THREE.Group(); scene.add(bin);
+const R = 0.26, BODY_H = 0.85, FLOOR = 0.06, TOP_MAX = 0.80;
+const stainless = new THREE.MeshStandardMaterial({ color: '#c9ced1', metalness: 0.92, roughness: 0.32, transparent: true, opacity: 0.32, side: THREE.DoubleSide, depthWrite: false });
+const body = new THREE.Mesh(new THREE.CylinderGeometry(R, R * 0.94, BODY_H, 64, 1, true), stainless);
+body.position.y = BODY_H / 2; body.castShadow = true; bin.add(body);
+const base = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.95, R * 0.95, 0.03, 48), new THREE.MeshStandardMaterial({ color: '#8b9195', metalness: 0.8, roughness: 0.4 }));
+base.position.y = 0.015; base.receiveShadow = true; bin.add(base);
+const rim = new THREE.Mesh(new THREE.TorusGeometry(R, 0.012, 12, 64), new THREE.MeshStandardMaterial({ color: '#d5dade', metalness: 0.95, roughness: 0.25 }));
+rim.rotation.x = Math.PI / 2; rim.position.y = BODY_H; bin.add(rim);
+// recycling sticker band
+const sticker = canvasTex(512, 64, (g, w, h) => {
+  g.fillStyle = '#1f6a45'; g.fillRect(0, 0, w, h); g.fillStyle = '#eaf3ec';
+  g.font = '600 26px "Noto Sans TC", sans-serif'; g.textBaseline = 'middle';
+  g.fillText('一般垃圾 · 僅限隨手小型垃圾', 24, h / 2);
+});
+const band = new THREE.Mesh(new THREE.CylinderGeometry(R + 0.002, R * 0.985 + 0.002, 0.07, 64, 1, true, -Math.PI * 0.32, Math.PI * 0.64), new THREE.MeshStandardMaterial({ map: sticker, roughness: 0.6 }));
+band.position.y = 0.6; bin.add(band);
+
+// trash column + debris on top
+const column = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.9, R * 0.86, 1, 40), new THREE.MeshStandardMaterial({ map: trashTex, roughness: 0.85 }));
+column.castShadow = true; bin.add(column);
+const debrisCols = ['#e8e3d8', '#c7a46b', '#7aa0c4', '#c4675a', '#6e8f62', '#e0b65a', '#d9d2c5'];
+const cupI = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.022, 0.017, 0.07, 10), new THREE.MeshStandardMaterial({ roughness: 0.5 }), 16);
+const boxI = new THREE.InstancedMesh(new THREE.BoxGeometry(0.06, 0.02, 0.045), new THREE.MeshStandardMaterial({ roughness: 0.7 }), 22);
+const debrisSeed = [];
+[cupI, boxI].forEach(m => { for (let i = 0; i < m.count; i++) { const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * R * 0.78; debrisSeed.push({ m, i, x: Math.cos(a) * r, z: Math.sin(a) * r, dy: Math.random() * 0.03, rx: Math.random() * 3, ry: Math.random() * 3, rz: Math.random() * 3 }); m.setColorAt(i, new THREE.Color(debrisCols[(i * 3 + m.count) % debrisCols.length])); } m.castShadow = true; bin.add(m); });
+
+// retrofit hood (the "modular" part)
+const abs = new THREE.MeshStandardMaterial({ color: '#1d5a3c', roughness: 0.45, metalness: 0.05 });
+const hood = new THREE.Mesh(new THREE.CylinderGeometry(R + 0.022, R + 0.022, 0.13, 64), abs);
+hood.position.y = BODY_H + 0.065; hood.castShadow = true; bin.add(hood);
+const cap = new THREE.Mesh(new THREE.SphereGeometry(R + 0.022, 48, 16, 0, Math.PI * 2, 0, Math.PI / 2), abs);
+cap.scale.y = 0.28; cap.position.y = BODY_H + 0.13; cap.castShadow = true; bin.add(cap);
+// slot: frame + dark mouth + hinged acrylic flap
+const SLOT_Y = BODY_H + 0.07, SLOT_Z = R + 0.02;
+const frame = new THREE.Mesh(new RoundedBoxGeometry(0.25, 0.105, 0.04, 3, 0.012), new THREE.MeshStandardMaterial({ color: '#9aa4a8', metalness: 0.7, roughness: 0.35 }));
+frame.position.set(0, SLOT_Y, SLOT_Z - 0.005); bin.add(frame);
+const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.074, 0.042), new THREE.MeshStandardMaterial({ color: '#050708', roughness: 1 }));
+mouth.position.set(0, SLOT_Y, SLOT_Z + 0.001); bin.add(mouth);
+const hinge = new THREE.Group(); hinge.position.set(0, SLOT_Y + 0.037, SLOT_Z + 0.024); bin.add(hinge);
+const flap = new THREE.Mesh(new THREE.BoxGeometry(0.205, 0.078, 0.006), new THREE.MeshPhysicalMaterial({ color: '#2b3d44', roughness: 0.15, metalness: 0.1, transmission: 0.2, transparent: true, opacity: 0.88 }));
+flap.position.y = -0.039; hinge.add(flap);
+// status LEDs
+const ledMat = c => new THREE.MeshStandardMaterial({ color: '#111', emissive: c, emissiveIntensity: 0.05 });
+const ledG = new THREE.Mesh(new THREE.SphereGeometry(0.011, 16, 12), ledMat('#38e08a'));
+const ledR = new THREE.Mesh(new THREE.SphereGeometry(0.011, 16, 12), ledMat('#ff4a3a'));
+ledG.position.set(-0.155, SLOT_Y + 0.025, SLOT_Z - 0.008); ledR.position.set(0.155, SLOT_Y + 0.025, SLOT_Z - 0.008); bin.add(ledG, ledR);
+const glowG = new THREE.PointLight('#38e08a', 0, 0.7); glowG.position.copy(ledG.position).add(new THREE.Vector3(0, 0, 0.05)); bin.add(glowG);
+const glowR = new THREE.PointLight('#ff4a3a', 0, 0.7); glowR.position.copy(ledR.position).add(new THREE.Vector3(0, 0, 0.05)); bin.add(glowR);
+
+// camera mast + AI camera head
+const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, 0.46, 12), steel);
+mast.position.set(0, BODY_H + 0.36, -R + 0.02); mast.castShadow = true; bin.add(mast);
+const camHead = new THREE.Group(); camHead.position.set(0, BODY_H + 0.6, -R + 0.03); bin.add(camHead);
+const camBox = new THREE.Mesh(new RoundedBoxGeometry(0.1, 0.07, 0.11, 3, 0.012), new THREE.MeshStandardMaterial({ color: '#e9ece8', roughness: 0.4 }));
+camHead.add(camBox);
+const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.022, 0.025, 24), new THREE.MeshPhysicalMaterial({ color: '#0b1418', roughness: 0.05, metalness: 0.5, clearcoat: 1 }));
+lens.rotation.x = Math.PI / 2; lens.position.set(0, -0.005, 0.064); camHead.add(lens);
+const camTarget = new THREE.Vector3(0, 0.25, 0.62);
+camHead.lookAt(camTarget.clone().add(bin.position));
+// field of view: a square-based cone from the lens to the ground zone
+const lensWorld = new THREE.Vector3(); lens.getWorldPosition(lensWorld);
+const fovDir = camTarget.clone().sub(lensWorld); const fovLen = fovDir.length() * 1.18; fovDir.normalize();
+const fovGeo = new THREE.ConeGeometry(fovLen * 0.62, fovLen, 4, 1, true); fovGeo.translate(0, -fovLen / 2, 0); fovGeo.rotateY(Math.PI / 4);
+const fovMat = new THREE.MeshBasicMaterial({ color: '#5fd0e6', transparent: true, opacity: 0.07, side: THREE.DoubleSide, depthWrite: false });
+const fov = new THREE.Mesh(fovGeo, fovMat); fov.position.copy(lensWorld);
+fov.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), fovDir); scene.add(fov);
+const fovEdges = new THREE.LineSegments(new THREE.EdgesGeometry(fovGeo), new THREE.LineBasicMaterial({ color: '#5fd0e6', transparent: true, opacity: 0.35 }));
+fovEdges.position.copy(fov.position); fovEdges.quaternion.copy(fov.quaternion); scene.add(fovEdges);
+
+// ground watch zone
+const roiTex = canvasTex(256, 256, (g, w, h) => { g.strokeStyle = '#fff'; g.lineWidth = 6; g.setLineDash([18, 12]); g.strokeRect(4, 4, w - 8, h - 8); });
+const roiMat = new THREE.MeshBasicMaterial({ map: roiTex, color: '#5fd0e6', transparent: true, opacity: 0.55, depthWrite: false });
+const roi = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.62), roiMat);
+roi.rotation.x = -Math.PI / 2; roi.position.set(0, 0.004, 0.66); scene.add(roi);
+const roiFillMat = new THREE.MeshBasicMaterial({ color: '#f06b5b', transparent: true, opacity: 0, depthWrite: false });
+const roiFill = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.62), roiFillMat); roiFill.rotation.x = -Math.PI / 2; roiFill.position.set(0, 0.003, 0.66); scene.add(roiFill);
+
+// clip-on ToF node on the inner back rim + laser beam
+const node = new THREE.Group(); node.position.set(0, BODY_H - 0.035, -R + 0.045); bin.add(node);
+const nodeBox = new THREE.Mesh(new RoundedBoxGeometry(0.09, 0.05, 0.06, 3, 0.01), new THREE.MeshStandardMaterial({ color: '#f0f2ee', roughness: 0.5 }));
+node.add(nodeBox);
+const clip = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.07, 0.008), new THREE.MeshStandardMaterial({ color: '#2a3134', roughness: 0.6 }));
+clip.position.set(0, 0.02, -0.035); node.add(clip);
+const win = new THREE.Mesh(new THREE.CircleGeometry(0.008, 16), new THREE.MeshBasicMaterial({ color: '#ff5a4a' }));
+win.rotation.x = Math.PI / 2; win.position.y = -0.026; node.add(win);
+const beamMat = new THREE.MeshBasicMaterial({ color: '#ff4b3e', transparent: true, opacity: 0.75, depthWrite: false });
+const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.0025, 0.0025, 1, 8), beamMat); bin.add(beam);
+const dot = new THREE.Mesh(new THREE.CircleGeometry(0.018, 20), new THREE.MeshBasicMaterial({ color: '#ff6a5a', transparent: true, opacity: 0.9, depthWrite: false }));
+dot.rotation.x = -Math.PI / 2; bin.add(dot);
+
+// ---------------------------------------------------------------- items
+function makeCup() {
+  const g = new THREE.Group();
+  const pts = [new THREE.Vector2(0, 0), new THREE.Vector2(0.026, 0), new THREE.Vector2(0.037, 0.14), new THREE.Vector2(0.0, 0.14)];
+  const cupMesh = new THREE.Mesh(new THREE.LatheGeometry(pts, 24), new THREE.MeshStandardMaterial({ color: '#efe9dc', roughness: 0.55 }));
+  const lid = new THREE.Mesh(new THREE.CylinderGeometry(0.039, 0.039, 0.006, 24), new THREE.MeshStandardMaterial({ color: '#2f6b4a', roughness: 0.3 }));
+  lid.position.y = 0.143;
+  const straw = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, 0.09, 8), new THREE.MeshStandardMaterial({ color: '#dfe7ea', transparent: true, opacity: 0.8 }));
+  straw.position.set(0.008, 0.18, 0); straw.rotation.z = 0.12;
+  g.add(cupMesh, lid, straw); g.traverse(o => o.castShadow = true);
+  return g;
+}
+function makeBag() {
+  const geo = new THREE.SphereGeometry(0.16, 40, 28);
+  const p = geo.attributes.position, v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i); const n = 1 + 0.07 * Math.sin(v.x * 40) * Math.cos(v.y * 33) + 0.05 * Math.sin(v.z * 51); v.multiplyScalar(n); if (v.y < -0.09) v.y = -0.09 - (v.y + 0.09) * 0.25; p.setXYZ(i, v.x, v.y * 1.05, v.z); }
+  geo.computeVertexNormals();
+  const mat = new THREE.MeshPhysicalMaterial({ color: '#b277b6', roughness: 0.35, clearcoat: 0.6, sheen: 0.4, transparent: true, opacity: 0.94 });
+  const g = new THREE.Group(); const m = new THREE.Mesh(geo, mat); m.castShadow = true;
+  const knot = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.08, 10), mat); knot.position.y = 0.19; knot.castShadow = true;
+  g.add(m, knot); return g;
+}
+
+// detection box drawn around an item
+const detBox = new THREE.Box3Helper(new THREE.Box3(), new THREE.Color('#5fd0e6')); detBox.visible = false; scene.add(detBox);
+
+// ---------------------------------------------------------------- labels (HTML, projected)
+const labelsEl = $('labels');
+function addTag(text, getPos, cls = '') {
+  const el = document.createElement('div'); el.className = 'tag ' + cls;
+  el.innerHTML = '<i></i><span></span>'; el.querySelector('span').textContent = text;
+  labelsEl.appendChild(el); return { el, getPos, show: true };
+}
+const wp = o => () => o.getWorldPosition(new THREE.Vector3());
+const tags = [
+  addTag('AI 攝影機 · IMX500 晶片上辨識', wp(camHead)),
+  addTag('投入口擋板 · 伺服馬達', wp(hinge)),
+  addTag('狀態燈', wp(ledR)),
+  addTag('夾掛式 ToF 感測器', wp(node)),
+  addTag('地面監看區', () => new THREE.Vector3(0.5, 0.01, 0.97)),
+];
+const detTag = addTag('', () => new THREE.Vector3(), 'det'); detTag.show = false;
+let labelsOn = true;
+const tmp = new THREE.Vector3();
+function placeTags() {
+  const r = renderer.domElement.getBoundingClientRect();
+  for (const t of [...tags, detTag]) {
+    const on = (t === detTag ? t.show : labelsOn && t.show);
+    if (!on) { t.el.hidden = true; continue; }
+    tmp.copy(t.getPos()).project(camera);
+    const vis = tmp.z < 1 && Math.abs(tmp.x) < 1.05 && Math.abs(tmp.y) < 1.05;
+    t.el.hidden = !vis;
+    if (vis) t.el.style.transform = `translate(${(tmp.x + 1) / 2 * r.width - 4}px, ${(1 - tmp.y) / 2 * r.height}px) translateY(-50%)`;
+  }
+}
+
+// ---------------------------------------------------------------- state
+const S = { fill: 62, lastSent: 60, state: null, gateOpen: false, groundAlert: null, minutes: 21 * 60 + 40, busy: false, bagOnGround: null };
+function classify(f, prev) {
+  if (prev === 'full' && f >= 85) return 'full';
+  if (f >= 90) return 'full';
+  if ((prev === 'near' || prev === 'full') && f >= 70) return 'near';
+  if (f >= 75) return 'near';
+  return 'ok';
+}
+const clock = () => { const m = ((S.minutes % 1440) + 1440) % 1440; return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'); };
+const logEl = $('log');
+function log(src, msg, cls = '') {
+  const li = document.createElement('li');
+  li.innerHTML = '<time></time><span class="src"></span><span></span>';
+  li.children[0].textContent = clock(); li.children[1].textContent = src;
+  li.children[2].textContent = msg; if (cls) li.children[2].className = cls;
+  logEl.prepend(li); while (logEl.children.length > 40) logEl.lastChild.remove();
+}
+function renderPanel() {
+  const f = S.fill;
+  $('fillnum').innerHTML = Math.round(f) + '<small>%</small>';
+  const st = S.state;
+  const bar = $('fillbar'); bar.style.width = f + '%';
+  bar.style.background = st === 'full' ? 'var(--crit)' : st === 'near' ? 'var(--warn)' : 'var(--accent)';
+  $('st').innerHTML = st === 'full' ? '<span class="pill crit">已滿</span>' : st === 'near' ? '<span class="pill warn">快滿</span>' : '<span class="pill ok">有空位</span>';
+  $('map').innerHTML = st === 'full' ? '<span class="crit">已從導引中隱藏</span>' : st === 'near' ? '<span class="warn">顯示（排序在後）</span>' : '<span class="ok">顯示</span>';
+  $('gate').innerHTML = S.gateOpen ? '<span class="pill ok">開啟</span>' : '<span class="pill mute">關閉</span>';
+  $('ground').innerHTML = S.groundAlert === 'illegal' ? '<span class="pill crit">違規傾倒</span>' : S.groundAlert === 'overflow' ? '<span class="pill warn">桶滿外溢</span>' : '<span class="pill mute">正常</span>';
+  $('clock').textContent = clock();
+}
+function setFill(f, why) {
+  const prev = S.state; S.fill = Math.max(0, Math.min(100, f)); S.state = classify(S.fill, prev);
+  const crossed = (S.lastSent < 75 && S.fill >= 75) || (S.lastSent < 90 && S.fill >= 90) || (S.lastSent >= 60 && S.fill < 30);
+  if (Math.abs(S.fill - S.lastSent) >= 5 || crossed) {
+    log('node', `${S.fill.toFixed(1)}% → MQTT 上傳${why ? '（' + why + '）' : ''}`, 'cam'); S.lastSent = S.fill;
+  } else {
+    log('node', `${S.fill.toFixed(1)}%，變化 ${(S.fill - S.lastSent >= 0 ? '+' : '')}${(S.fill - S.lastSent).toFixed(1)} < 5，不連網`, 'mute');
+  }
+  if (prev && prev !== S.state) {
+    if (S.state === 'full') log('srv', '已滿：市民地圖改導向附近有空位的桶', 'crit');
+    else if (S.state === 'near') log('srv', '快滿：列入順路清運', 'warn');
+    else log('srv', '恢復有空位', 'ok');
+  }
+  renderPanel();
+}
+let shownFill = S.fill;
+function applyFillVisual(f) {
+  const top = FLOOR + (TOP_MAX - FLOOR) * f / 100, h = Math.max(top - FLOOR, 0.001);
+  column.scale.y = h; column.position.y = FLOOR + h / 2;
+  const mtx = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
+  for (const d of debrisSeed) { e.set(d.rx, d.ry, d.rz); q.setFromEuler(e); mtx.compose(new THREE.Vector3(d.x, top + d.dy, d.z), q, new THREE.Vector3(1, 1, 1)); d.m.setMatrixAt(d.i, mtx); }
+  cupI.instanceMatrix.needsUpdate = boxI.instanceMatrix.needsUpdate = true;
+  const y0 = node.position.y - 0.026; beam.scale.y = y0 - top; beam.position.set(node.position.x, (y0 + top) / 2, node.position.z);
+  dot.position.set(node.position.x, top + 0.035, node.position.z);
+}
+
+// ---------------------------------------------------------------- tiny tween engine
+const tweens = [];
+const ease = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+const tween = (sec, fn, e = ease) => new Promise(res => tweens.push({ t: 0, d: Math.max(sec, 0.001), fn, e, res }));
+const wait = sec => tween(sec, () => { });
+const arc = (obj, a, b, sec, h = 0.25) => tween(sec, k => { obj.position.lerpVectors(a, b, k); obj.position.y += Math.sin(Math.PI * k) * h; });
+function setLed(which, on) { const m = which === 'g' ? ledG : ledR, l = which === 'g' ? glowG : glowR; m.material.emissiveIntensity = on ? 3 : 0.05; l.intensity = on ? 1.4 : 0; }
+const flapTo = (ang, sec = 0.35) => { const a0 = hinge.rotation.x; return tween(sec, k => hinge.rotation.x = a0 + (ang - a0) * k); };
+function showDet(obj, text, color) {
+  detBox.box.setFromObject(obj); detBox.material.color.set(color); detBox.visible = true; detBox.userData.obj = obj;
+  detTag.el.querySelector('span').textContent = text; detTag.el.style.color = color;
+  detTag.getPos = () => new THREE.Vector3(detBox.box.max.x, detBox.box.max.y, detBox.box.max.z); detTag.show = true;
+}
+function hideDet() { detBox.visible = false; detTag.show = false; }
+const pulseFov = async () => { await tween(0.25, k => fovMat.opacity = 0.07 + 0.12 * k); await tween(0.35, k => fovMat.opacity = 0.19 - 0.12 * k); };
+
+const buttons = ['b-cup', 'b-bag', 'b-ff', 'b-collect'].map($);
+async function run(fn) { if (S.busy) return; S.busy = true; buttons.forEach(b => b.disabled = true); controls.autoRotate = false; try { await fn(); } finally { S.busy = false; buttons.forEach(b => b.disabled = false); } }
+const slotFront = () => new THREE.Vector3(0, SLOT_Y - 0.07, SLOT_Z + 0.16);
+
+// ---------------------------------------------------------------- scenarios
+async function dropCup() {
+  S.minutes += 2;
+  const cup = makeCup(); scene.add(cup);
+  const start = new THREE.Vector3(0.55, 1.25, 1.35); cup.position.copy(start);
+  await arc(cup, start, slotFront(), 0.9, 0.2);
+  pulseFov(); await wait(0.25);
+  showDet(cup, 'cup 0.91 · 2/2 幀', '#4cc38a');
+  log('gate', '辨識：cup 0.91，連續 2 幀 → 開閘', 'ok');
+  await wait(0.45);
+  S.gateOpen = true; setLed('g', true); renderPanel(); await flapTo(1.15);
+  hideDet();
+  const inside = new THREE.Vector3(0, SLOT_Y - 0.02, SLOT_Z - 0.12);
+  await arc(cup, cup.position.clone(), inside, 0.45, 0.04);
+  const top = FLOOR + (TOP_MAX - FLOOR) * S.fill / 100;
+  await tween(0.4, k => { cup.position.lerpVectors(inside, new THREE.Vector3(0.02, top + 0.02, 0), k); cup.rotation.z = k * 1.3; }, t => t * t);
+  scene.remove(cup);
+  const f0 = S.fill, f1 = Math.min(100, f0 + 3.2);
+  tween(0.6, k => applyFillVisual(f0 + (f1 - f0) * k));
+  await wait(0.9);
+  await flapTo(0, 0.4); S.gateOpen = false; setLed('g', false);
+  log('gate', '投入口淨空 → 關閘', 'mute');
+  setFill(f1);
+}
+
+async function dropBag() {
+  S.minutes += 3;
+  const bag = makeBag(); scene.add(bag);
+  const start = new THREE.Vector3(-0.6, 1.3, 1.4); bag.position.copy(start);
+  const hover = slotFront().add(new THREE.Vector3(0, 0.04, 0.08));
+  await arc(bag, start, hover, 1.0, 0.18);
+  pulseFov(); await wait(0.25);
+  showDet(bag, 'garbage_bag 0.93 · 佔投入口 81%', '#f06b5b');
+  log('gate', '辨識：garbage_bag 0.93 → 拒收，閘門不開', 'crit');
+  for (let i = 0; i < 4; i++) { setLed('r', true); await wait(0.18); setLed('r', false); await wait(0.14); }
+  log('gate', '事件 bag_rejected → 伺服器（不含影像）', 'cam');
+  await wait(0.3); hideDet();
+  // the person leaves it on the ground next to the bin
+  const land = new THREE.Vector3(0.24, 0.155, 0.62);
+  await tween(0.55, k => { bag.position.lerpVectors(hover, land, k); bag.rotation.z = -0.4 * k; }, t => t * t);
+  await tween(0.18, k => bag.scale.set(1 + 0.12 * Math.sin(Math.PI * k), 1 - 0.14 * Math.sin(Math.PI * k), 1 + 0.12 * Math.sin(Math.PI * k)));
+  S.bagOnGround = bag;
+  for (let i = 1; i <= 2; i++) {
+    S.minutes += 1;
+    await tween(0.35, k => roiMat.color.lerpColors(new THREE.Color('#5fd0e6'), new THREE.Color('#f0a23b'), k));
+    log('gate', `地面檢查 #${i}：覆蓋率 21%（門檻 5%）`, 'warn');
+    await wait(0.45);
+  }
+  const overflow = S.fill >= 90;
+  S.groundAlert = overflow ? 'overflow' : 'illegal';
+  log('srv', overflow ? `融合：地面有垃圾＋桶 ${Math.round(S.fill)}% → 桶滿外溢，加入清運` : `融合：地面有垃圾＋桶僅 ${Math.round(S.fill)}% → 違規傾倒警報`, overflow ? 'warn' : 'crit');
+  roiMat.color.set(overflow ? '#f0a23b' : '#f06b5b');
+  renderPanel();
+}
+
+async function fastForward() {
+  const h = Math.floor(S.minutes / 60) % 24;
+  const rate = (h >= 18 && h <= 23) ? 8 + Math.random() * 4 : 3 + Math.random() * 3; // evening peak
+  S.minutes += 60;
+  const f0 = S.fill, f1 = Math.min(100, f0 + rate);
+  await tween(0.9, k => applyFillVisual(f0 + (f1 - f0) * k));
+  setFill(f1, f1 >= 90 && f0 < 90 ? '跨 90% 門檻' : f1 >= 75 && f0 < 75 ? '跨 75% 門檻' : '');
+}
+
+async function collect() {
+  S.minutes += 15;
+  log('srv', '清運車抵達（動態路線）', 'cam');
+  if (S.bagOnGround) { const b = S.bagOnGround; await tween(0.5, k => { b.scale.setScalar(1 - k); b.position.y += 0.01; }); scene.remove(b); S.bagOnGround = null; }
+  const f0 = S.fill, f1 = 4 + Math.random() * 3;
+  await tween(1.1, k => applyFillVisual(f0 + (f1 - f0) * k));
+  S.groundAlert = null; roiMat.color.set('#5fd0e6');
+  setFill(f1, '落差 ≥ 30%，視為已清運');
+  log('srv', '事件結案；滿溢預測從這一刻重新計算', 'ok');
+}
+
+$('b-cup').onclick = () => run(dropCup);
+$('b-bag').onclick = () => run(dropBag);
+$('b-ff').onclick = () => run(fastForward);
+$('b-collect').onclick = () => run(collect);
+function toggle(id, fn) { const b = $(id); b.onclick = () => { const on = b.getAttribute('aria-pressed') !== 'true'; b.setAttribute('aria-pressed', on); fn(on); }; }
+toggle('t-cut', on => { stainless.opacity = on ? 0.32 : 1; stainless.depthWrite = !on; stainless.needsUpdate = true; beam.visible = dot.visible = on; });
+toggle('t-label', on => { labelsOn = on; });
+toggle('t-fov', on => { fov.visible = fovEdges.visible = on; });
+
+// ---------------------------------------------------------------- boot
+S.state = classify(S.fill, null);
+applyFillVisual(S.fill); renderPanel();
+log('node', '開機：每 5 分鐘量測，變化 ≥ 5% 才上傳', 'mute');
+log('gate', 'AI 攝影機就緒：投入口 + 地面兩個監看區', 'mute');
+
+function resize() { const w = stage.clientWidth, h = stage.clientHeight; renderer.setSize(w, h, false); camera.aspect = w / Math.max(h, 1); camera.updateProjectionMatrix(); }
+new ResizeObserver(resize).observe(stage); resize();
+
+const clk = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clk.getDelta(), 0.05), t = clk.elapsedTime;
+  for (let i = tweens.length - 1; i >= 0; i--) { const tw = tweens[i]; tw.t += dt; const k = Math.min(1, tw.t / tw.d); tw.fn(tw.e(k)); if (k >= 1) { tweens.splice(i, 1); tw.res(); } }
+  beamMat.opacity = 0.55 + 0.25 * Math.sin(t * 9);
+  if (S.groundAlert) roiFillMat.opacity = 0.08 + 0.07 * Math.sin(t * 4); else roiFillMat.opacity = 0;
+  if (detBox.visible && detBox.userData.obj) detBox.box.setFromObject(detBox.userData.obj);
+  controls.update(); renderer.render(scene, camera); placeTags();
+});
+</script>
+
+</body></html>
