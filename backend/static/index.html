@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>找垃圾桶</title>
+<meta name="theme-color" content="#1f6f4a">
+<link rel="manifest" href="/static/manifest.json">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root{--g:#1f6f4a;--y:#c98a00;--r:#c0392b;--k:#6b7280;--bg:#fff;--fg:#111}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif;color:var(--fg)}
+  #map{position:fixed;inset:0}
+  .sheet{position:fixed;left:12px;right:12px;bottom:max(12px,env(safe-area-inset-bottom));z-index:1000;
+    background:var(--bg);border-radius:16px;box-shadow:0 8px 30px rgba(0,0,0,.18);padding:14px 16px;max-width:480px;margin:0 auto}
+  .sheet h1{font-size:17px;margin:0 0 4px}
+  .sheet p{margin:0;color:#444;font-size:14px}
+  button.go{width:100%;margin-top:12px;padding:13px;border:0;border-radius:12px;background:var(--g);color:#fff;font-size:16px;font-weight:600}
+  a.nav{display:block;text-align:center;margin-top:8px;padding:11px;border-radius:12px;border:1.5px solid var(--g);color:var(--g);text-decoration:none;font-weight:600}
+  .legend{display:flex;gap:12px;margin-top:10px;font-size:12px;color:#555;flex-wrap:wrap}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:-1px}
+  .bar{height:6px;background:#eee;border-radius:3px;overflow:hidden;margin:8px 0 2px}
+  .bar>i{display:block;height:100%}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="sheet" id="sheet">
+  <h1>手上有垃圾？</h1>
+  <p id="msg">幫你找最近、還有空位的公共垃圾桶。</p>
+  <div id="detail"></div>
+  <button class="go" id="go">找最近有空位的垃圾桶</button>
+  <div class="legend">
+    <span><i class="dot" style="background:var(--g)"></i>有空位</span>
+    <span><i class="dot" style="background:var(--y)"></i>快滿</span>
+    <span><i class="dot" style="background:var(--r)"></i>已滿</span>
+    <span><i class="dot" style="background:var(--k)"></i>維護中</span>
+  </div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const COLORS={available:'#1f6f4a',near_full:'#c98a00',full:'#c0392b',offline:'#6b7280',fault:'#6b7280'};
+const LABEL={available:'有空位',near_full:'快滿了',full:'已滿',offline:'離線',fault:'維護中'};
+const map=L.map('map',{zoomControl:false}).setView([25.0235,121.5300],15);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+const layer=L.layerGroup().addTo(map);
+let me=null, meMarker=null, line=null;
+
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+
+async function loadBins(){
+  const bins=await (await fetch('/api/bins')).json();
+  layer.clearLayers();
+  for(const b of bins){
+    L.circleMarker([b.lat,b.lng],{radius:9,weight:2,color:'#fff',fillColor:COLORS[b.state],fillOpacity:.95})
+      .bindPopup(`<b>${esc(b.name)}</b><br>${LABEL[b.state]}${b.fill_pct!=null?` · ${Math.round(b.fill_pct)}%`:''}`)
+      .addTo(layer);
+  }
+}
+
+function locate(){
+  return new Promise(res=>{
+    if(!navigator.geolocation) return res([25.0262,121.5275]);
+    navigator.geolocation.getCurrentPosition(p=>res([p.coords.latitude,p.coords.longitude]),
+      ()=>res([25.0262,121.5275]),{enableHighAccuracy:true,timeout:6000});
+  });
+}
+
+document.getElementById('go').onclick=async()=>{
+  const msg=document.getElementById('msg'), det=document.getElementById('detail');
+  msg.textContent='定位中…';
+  me=await locate();
+  if(meMarker) meMarker.remove();
+  meMarker=L.circleMarker(me,{radius:7,color:'#fff',weight:3,fillColor:'#2563eb',fillOpacity:1}).addTo(map);
+  const r=await (await fetch(`/api/nearest?lat=${me[0]}&lng=${me[1]}&n=3`)).json();
+  if(!r.length){msg.textContent='附近暫時沒有可用的垃圾桶。';det.innerHTML='';return;}
+  const b=r[0];
+  if(line) line.remove();
+  line=L.polyline([me,[b.lat,b.lng]],{dashArray:'6 8',color:'#2563eb',weight:3}).addTo(map);
+  map.fitBounds(line.getBounds(),{padding:[60,60],maxZoom:17});
+  msg.innerHTML=`<b>${esc(b.name)}</b> · 約 ${b.distance_m} 公尺 · ${LABEL[b.state]}`;
+  const c=COLORS[b.state];
+  det.innerHTML=`<div class="bar"><i style="width:${b.fill_pct}%;background:${c}"></i></div>
+    <p style="font-size:12px">目前 ${Math.round(b.fill_pct)}%${b.has_gate?' · 此桶只收小型隨手垃圾，家用垃圾袋請勿投入':''}</p>
+    <a class="nav" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${b.lat},${b.lng}&travelmode=walking">步行導航</a>`;
+  document.getElementById('go').textContent='重新尋找';
+};
+
+loadBins(); setInterval(loadBins,60000);
+if('serviceWorker' in navigator) navigator.serviceWorker.register('/static/sw.js');
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+# 後端：讀全部
+user backend
+topic read smartbin/#
+
+# 每台裝置的帳號 = bin_id，只能寫自己的 topic（%u 會被代換成帳號）
+pattern write smartbin/%u/telemetry
+pattern write smartbin/%u/event

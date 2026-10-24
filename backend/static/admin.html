@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>清運調度台</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif;color:#111;background:#f6f7f9}
+  header{display:flex;align-items:center;gap:12px;padding:12px 16px;background:#14352a;color:#fff}
+  header h1{font-size:17px;margin:0;flex:1}
+  main{display:grid;grid-template-columns:1fr 420px;gap:12px;padding:12px;height:calc(100vh - 50px)}
+  @media(max-width:900px){main{grid-template-columns:1fr;height:auto}#map{height:55vh}}
+  #map{border-radius:12px;min-height:300px}
+  aside{overflow:auto;display:flex;flex-direction:column;gap:12px}
+  .card{background:#fff;border-radius:12px;padding:12px 14px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+  .card h2{font-size:14px;margin:0 0 8px}
+  .kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center}
+  .kpi b{display:block;font-size:20px}
+  .kpi span{font-size:12px;color:#666}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  td,th{padding:5px 4px;border-bottom:1px solid #eee;text-align:left}
+  .pill{display:inline-block;padding:1px 7px;border-radius:9px;font-size:11px;color:#fff}
+  label{font-size:13px;margin-right:8px}
+  input{width:64px}
+  button{padding:7px 12px;border:0;border-radius:8px;background:#1f6f4a;color:#fff;font-weight:600;cursor:pointer}
+  button.ghost{background:#eee;color:#111}
+  ol{padding-left:20px;margin:6px 0;font-size:13px}
+</style>
+</head>
+<body>
+<header><h1>Smart Bin 清運調度台</h1><button class="ghost" id="logout">登出</button></header>
+<main>
+  <div id="map"></div>
+  <aside>
+    <div class="card">
+      <h2>動態派車</h2>
+      <label>車輛 <input id="veh" type="number" value="1" min="1" max="10"></label>
+      <label>容量(L) <input id="cap" type="number" value="2000" step="100"></label>
+      <label>預測(h) <input id="hz" type="number" value="4" step="0.5"></label>
+      <button id="plan">產生路線</button>
+      <div class="kpi" id="kpi" style="margin-top:10px"></div>
+      <div id="routes"></div>
+    </div>
+    <div class="card"><h2>事件</h2><table id="events"></table></div>
+    <div class="card"><h2>垃圾桶狀態</h2><table id="bins"></table></div>
+  </aside>
+</main>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const C={available:'#1f6f4a',near_full:'#c98a00',full:'#c0392b',offline:'#6b7280',fault:'#7c3aed'};
+const EVT={overflow:'桶滿外溢',illegal_dumping:'違規傾倒',bag_rejected:'拒收大袋',sensor_blocked:'感測器遮擋',
+  ground_waste_unknown:'地面垃圾',fire_smoke:'煙霧',tamper:'破壞'};
+const VCOL=['#2563eb','#db2777','#ea580c','#0891b2','#65a30d'];
+let TOKEN=sessionStorage.getItem('adm')||prompt('Admin token');
+sessionStorage.setItem('adm',TOKEN);
+document.getElementById('logout').onclick=()=>{sessionStorage.removeItem('adm');location.reload()};
+const H={'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'};
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+const map=L.map('map').setView([25.0215,121.5310],15);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+const binLayer=L.layerGroup().addTo(map), routeLayer=L.layerGroup().addTo(map);
+
+async function loadBins(){
+  const bins=await (await fetch('/api/bins')).json();
+  binLayer.clearLayers();
+  document.getElementById('bins').innerHTML='<tr><th>ID</th><th>位置</th><th>狀態</th><th>%</th><th>滿前(h)</th></tr>'+
+    bins.map(b=>`<tr><td>${esc(b.id)}</td><td>${esc(b.name)}</td><td><span class="pill" style="background:${C[b.state]}">${b.state}</span></td>
+      <td>${b.fill_pct??'-'}</td><td>${b.hours_to_full??'-'}</td></tr>`).join('');
+  bins.forEach(b=>L.circleMarker([b.lat,b.lng],{radius:8,color:'#fff',weight:2,fillColor:C[b.state],fillOpacity:.95})
+    .bindTooltip(`${esc(b.id)} ${esc(b.name)} ${b.fill_pct??'-'}%`).addTo(binLayer));
+}
+async function loadEvents(){
+  const r=await fetch('/api/events?limit=30',{headers:H});
+  if(r.status===401){sessionStorage.removeItem('adm');alert('token 錯誤');location.reload();return}
+  const ev=await r.json();
+  document.getElementById('events').innerHTML=ev.length?ev.map(e=>`<tr><td>${new Date(e.ts*1000).toLocaleTimeString()}</td>
+    <td>${esc(e.bin_id)}</td><td>${EVT[e.type]||esc(e.type)}</td>
+    <td>${e.resolved?'✓':`<button class="ghost" onclick="resolve(${e.id})">處理</button>`}</td></tr>`).join(''):'<tr><td>無</td></tr>';
+}
+async function resolve(id){await fetch(`/api/events/${id}/resolve`,{method:'POST',headers:H});loadEvents()}
+
+document.getElementById('plan').onclick=async()=>{
+  const body={vehicles:+veh.value,vehicle_capacity_l:+cap.value,horizon_h:+hz.value};
+  const r=await fetch('/api/dispatch/plan',{method:'POST',headers:H,body:JSON.stringify(body)});
+  if(!r.ok){alert(await r.text());return}
+  const p=await r.json();
+  routeLayer.clearLayers();
+  L.marker([p.depot.lat,p.depot.lng]).bindTooltip('清潔隊').addTo(routeLayer);
+  const stops=p.routes.reduce((n,x)=>n+x.path.length-2,0);
+  document.getElementById('kpi').innerHTML=`<div><b>${(p.total_m/1000).toFixed(1)} km</b><span>動態路線</span></div>
+    <div><b>${(p.baseline_m/1000).toFixed(1)} km</b><span>固定排程</span></div>
+    <div><b>${p.saving_pct}%</b><span>節省・${stops} 站</span></div>`;
+  document.getElementById('routes').innerHTML=p.routes.map(rt=>`<p style="margin:8px 0 0;font-size:13px;color:${VCOL[rt.vehicle%5]}">
+    <b>車 ${rt.vehicle+1}</b>・${(rt.distance_m/1000).toFixed(1)} km・載量約 ${rt.load_l} L</p>
+    <ol>${rt.path.filter(s=>!s.depot).map(s=>`<li>${esc(s.name)}<br><small>${esc(s.reason)}</small></li>`).join('')}</ol>`).join('')
+    +(p.skipped.length?`<p style="font-size:12px;color:#666">未排入：${p.skipped.join(', ')}</p>`:'');
+  p.routes.forEach(rt=>{
+    L.polyline(rt.path.map(s=>[s.lat,s.lng]),{color:VCOL[rt.vehicle%5],weight:4,opacity:.85}).addTo(routeLayer);
+    rt.path.filter(s=>!s.depot).forEach((s,i)=>L.marker([s.lat,s.lng],{icon:L.divIcon({className:'',
+      html:`<div style="background:${VCOL[rt.vehicle%5]};color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;font-size:12px;font-weight:700">${i+1}</div>`})}).addTo(routeLayer));
+  });
+};
+loadBins();loadEvents();setInterval(()=>{loadBins();loadEvents()},30000);
+</script>
+</body>
+</html>

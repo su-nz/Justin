@@ -1,0 +1,9 @@
+{
+  "name": "找垃圾桶 Smart Bin",
+  "short_name": "找垃圾桶",
+  "start_url": "/static/index.html",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#1f6f4a",
+  "icons": [{"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml"}]
+}

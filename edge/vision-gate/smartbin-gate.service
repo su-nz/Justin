@@ -1,0 +1,15 @@
+[Unit]
+Description=Smart Bin vision gate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/smartbin/gate.env
+ExecStart=/usr/bin/python3 /opt/smartbin/gate.py --backend imx500 --model /opt/smartbin/models/network.rpk
+Restart=always
+RestartSec=5
+User=smartbin
+StateDirectory=smartbin
+
+[Install]
+WantedBy=multi-user.target

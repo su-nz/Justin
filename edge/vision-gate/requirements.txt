@@ -1,0 +1,5 @@
+# Pi Zero 2 W + AI Camera：先 sudo apt install imx500-all python3-picamera2 python3-gpiozero
+httpx>=0.27
+# --backend onnx（Pi 5 / 筆電）才需要：
+# onnxruntime>=1.18
+# opencv-python-headless>=4.9

@@ -1,0 +1,29 @@
+# 一鍵起：MQTT broker + 後端。對外請放在 Caddy/Nginx 後面上 HTTPS（LINE webhook 規定 HTTPS）
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports: ["1883:1883", "8883:8883"]
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/acl:/mosquitto/config/acl:ro
+      - ./mosquitto/passwd:/mosquitto/config/passwd:ro
+      - ./mosquitto/certs:/mosquitto/certs:ro
+    restart: unless-stopped
+  backend:
+    build: ../backend
+    ports: ["8000:8000"]
+    environment:
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN}
+      MQTT_HOST: mosquitto
+      MQTT_USER: backend
+      MQTT_PASS: ${MQTT_BACKEND_PASS:?set MQTT_BACKEND_PASS}
+      LINE_CHANNEL_SECRET: ${LINE_CHANNEL_SECRET:-}
+      LINE_CHANNEL_ACCESS_TOKEN: ${LINE_CHANNEL_ACCESS_TOKEN:-}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8000}
+      DEPOT_LAT: "25.0236"
+      DEPOT_LNG: "121.5440"
+    volumes: ["smartbin-data:/data"]
+    depends_on: [mosquitto]
+    restart: unless-stopped
+volumes:
+  smartbin-data:
