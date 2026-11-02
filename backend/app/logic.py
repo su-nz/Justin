@@ -15,7 +15,7 @@ from dataclasses import dataclass
 NEAR_FULL_PCT = 75.0      # 進入「將滿」
 FULL_PCT = 90.0           # 進入「已滿」：市民地圖不再導向此桶
 HYSTERESIS_PCT = 5.0      # 離開狀態需降回門檻 - 5%
-OFFLINE_AFTER_S = 45 * 60 # 超過 45 分鐘沒心跳 → offline（韌體心跳 30 分鐘）
+OFFLINE_AFTER_S = 65 * 60 # 超過 65 分鐘沒心跳 → offline（韌體心跳 30 分鐘，容許漏 2 次）
 COLLECTION_DROP_PCT = 30.0  # 兩筆之間掉超過 30% 視為已清運
 
 

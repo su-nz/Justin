@@ -32,7 +32,7 @@ PASTE_CA_HERE
 #define HX711_SAMPLES     10
 #define HX711_SCALE       420.0f   // 放已知重量（如 1 kg 水）後：(raw - offset) / 1000
 #define HX711_OFFSET      0L       // 空桶（含內袋）時的原始讀值 scale.read_average(20)
-#define USE_LOADCELL      1        // 沒裝秤重模組就設 0
+#define USE_LOADCELL      0        // 秤重是第二階段選配；裝了 HX711 才設 1
 
 // ===== 腳位（XIAO ESP32C3） =====
 #define PIN_SDA           6   // D4

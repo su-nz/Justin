@@ -9,6 +9,7 @@
 #include <VL53L1X.h>
 #include <HX711.h>
 #include <time.h>
+#include <driver/gpio.h>
 #include "config.h"
 
 // ---------- 跨 deep sleep 保留的狀態（RTC 記憶體） ----------
@@ -154,6 +155,8 @@ static void enqueue(const Reading &r) {
 static void sleepNow(float fill) {
   uint64_t s = (fill > BUSY_THRESHOLD) ? SLEEP_BUSY_S : SLEEP_NORMAL_S;
   digitalWrite(PIN_SENSOR_PWR, HIGH);  // P-MOSFET：HIGH = 關感測器電源
+  gpio_hold_en((gpio_num_t)PIN_SENSOR_PWR);  // deep sleep 預設不保持 GPIO，不鎖住的話閘極會浮接
+  gpio_deep_sleep_hold_en();
   WiFi.mode(WIFI_OFF);
   esp_sleep_enable_timer_wakeup(s * 1000000ULL);
   esp_deep_sleep_start();
@@ -161,6 +164,7 @@ static void sleepNow(float fill) {
 
 void setup() {
   Serial.begin(115200);
+  gpio_hold_dis((gpio_num_t)PIN_SENSOR_PWR);
   pinMode(PIN_SENSOR_PWR, OUTPUT);
   digitalWrite(PIN_SENSOR_PWR, LOW);   // 開感測器電源
   pinMode(PIN_TOF_XSHUT, OUTPUT);

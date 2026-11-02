@@ -52,6 +52,8 @@ class Cfg:
     servo_pin: int = 18
     led_green: int = 23
     led_red: int = 24
+    buzzer_pin: int = 25
+    state_period_s: float = 60.0    # 多久向後端查一次桶子狀態
     spool: str = os.environ.get("GATE_SPOOL", "/var/lib/smartbin/spool.jsonl")
 
 
@@ -174,10 +176,12 @@ class Actuators:
     def __init__(self, cfg: Cfg, dry: bool):
         self.dry = dry
         if not dry:
-            from gpiozero import LED, AngularServo
+            from gpiozero import LED, AngularServo, Buzzer
+            # SG90 / MG90S：0.5–2.5 ms 對應 0–180°，所以 90° 是 1.5 ms
             self.servo = AngularServo(cfg.servo_pin, min_angle=0, max_angle=90,
-                                      min_pulse_width=0.0005, max_pulse_width=0.0025)
+                                      min_pulse_width=0.0005, max_pulse_width=0.0015)
             self.g, self.r = LED(cfg.led_green), LED(cfg.led_red)
+            self.buzzer = Buzzer(cfg.buzzer_pin)
         self.is_open = False
         self.close()
 
@@ -200,6 +204,7 @@ class Actuators:
         log.info("REJECT (red)")
         if not self.dry:
             self.r.blink(on_time=0.2, off_time=0.2, n=8, background=True)
+            self.buzzer.beep(on_time=0.2, off_time=0.2, n=3, background=True)
 
     def shutdown(self):
         self.close()
@@ -230,6 +235,8 @@ class Uploader(threading.Thread):
         try:
             r = httpx.post(f"{self.cfg.api}/api/events", json=ev, timeout=5,
                            headers={"X-Device-Token": self.cfg.token})
+            if 400 <= r.status_code < 500:  # 重送也不會成功（多半是 token 或 bin_id 設錯），至少要看得到
+                log.warning("event dropped: HTTP %s %s", r.status_code, r.text)
             return r.status_code < 500
         except httpx.HTTPError:
             return False
@@ -249,6 +256,30 @@ class Uploader(threading.Thread):
                 spool.write_text("".join(json.dumps(p) + "\n" for p in left))
 
 
+class BinStateWatcher(threading.Thread):
+    """定期向後端查桶子狀態，桶滿時閘門不開。查不到就沿用上次結果（預設未滿），斷網不會讓桶停擺。"""
+
+    def __init__(self, cfg: Cfg, gate: "Gate"):
+        super().__init__(daemon=True)
+        self.cfg, self.gate = cfg, gate
+
+    def poll(self):
+        import httpx
+        try:
+            bins = httpx.get(f"{self.cfg.api}/api/bins", timeout=5).json()
+        except (httpx.HTTPError, ValueError) as e:
+            log.warning("bin state unavailable: %s", e)
+            return
+        for b in bins:
+            if b["id"] == self.cfg.bin_id:
+                self.gate.bin_full = b["state"] == "full"
+
+    def run(self):
+        while True:
+            time.sleep(self.cfg.state_period_s)
+            self.poll()
+
+
 # ----------------------------------------------------------------------------- main logic
 class Gate:
     def __init__(self, cfg: Cfg, act: Actuators, up: Uploader):
@@ -257,13 +288,17 @@ class Gate:
         self.open_until = 0.0
         self.last_reject = self.last_ground = -1e9
         self.next_ground = 0.0
+        self.bin_full = False
 
     def step(self, dets, now):
         c = self.cfg
-        slot = [d for d in dets if d[1] >= c.conf and inside(d[2], c.slot_roi) > 0.5]
+        # 物體大半在投入口內，或投入口大半被物體蓋住（貼近鏡頭的大袋框會比 ROI 大很多）
+        slot = [d for d in dets if d[1] >= c.conf
+                and (inside(d[2], c.slot_roi) > 0.5 or inside(c.slot_roi, d[2]) > 0.5)]
 
-        # 1) 拒收判斷：垃圾袋類別，或任何物體大到超過投入口面積比
-        big = [d for d in slot if d[0] in c.bag or area_ratio(d[2], c.slot_roi) > c.max_item_area]
+        # 1) 拒收判斷：垃圾袋類別，或任何物體大到超過投入口面積比（手不算，拿著杯子的手本來就大）
+        big = [d for d in slot if d[0] in c.bag
+               or (d[0] not in c.no_close and area_ratio(d[2], c.slot_roi) > c.max_item_area)]
         small = [d for d in slot if d[0] in c.small and d not in big]
         hand = any(d[0] in c.no_close for d in slot)
 
@@ -273,15 +308,20 @@ class Gate:
         if self.reject_streak >= c.confirm_frames:
             if self.act.is_open and not hand:
                 self.act.close()
+            if self.reject_streak == c.confirm_frames:  # 每次投入都要提示；冷卻只限制上傳
+                self.act.reject()
             if now - self.last_reject > c.reject_cooldown_s:
                 d = max(big, key=lambda x: x[1])
-                self.act.reject()
                 self.up.emit("bag_rejected", d[1], {"cls": d[0], "area_ratio": round(area_ratio(d[2], c.slot_roi), 2)})
                 self.last_reject = now
         elif self.small_streak >= c.confirm_frames:
-            if not self.act.is_open:
-                self.act.open()
-            self.open_until = now + c.open_s
+            if self.bin_full:  # 桶滿：小垃圾也不開，市民由地圖 / LINE 導向下一個有空位的桶
+                if self.small_streak == c.confirm_frames:
+                    self.act.reject()
+            else:
+                if not self.act.is_open:
+                    self.act.open()
+                self.open_until = now + c.open_s
 
         if self.act.is_open and now > self.open_until and not hand:
             self.act.close()
@@ -323,6 +363,10 @@ def main():
     up = Uploader(cfg, offline=a.offline)
     up.start()
     gate = Gate(cfg, act, up)
+    if not a.offline:
+        watcher = BinStateWatcher(cfg, gate)
+        watcher.poll()
+        watcher.start()
     t = time.time()
     try:
         while True:

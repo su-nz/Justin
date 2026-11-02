@@ -42,7 +42,7 @@ python sim/simulate.py --hours 2 --live    # 持續推進（20 倍速）
 
 - 市民地圖：http://localhost:8000/
 - 調度台：http://localhost:8000/static/admin.html（token：`dev-admin-token`）→ 按「產生路線」
-- 測試：`python -m pytest tests -q`（6 項：遲滯、清運後速率、融合、派車、覆蓋率聯集、閘門）
+- 測試：`python -m pytest tests -q`（遲滯、離線門檻、清運後速率、融合、派車、覆蓋率聯集、閘門情境）
 - 閘門邏輯（不需 Pi）：`python edge/vision-gate/gate.py --backend mock --scenario edge/vision-gate/scenarios/demo.json --offline --sim-dt 30`
 
 模擬結果範例：16 桶中排入 7 站，動態路線 8.5 km vs 固定排程 11.7 km，**節省約 27%**（Paper 1 報告 30.76%）。距離目前用直線 × 1.35 近似，上線前換成 OSRM 距離矩陣。
@@ -79,7 +79,7 @@ PlatformIO 專案，板子 `seeed_xiao_esp32c3`。先改 `include/config.h`（Wi
 4. **網路不穩**：RTC 記憶體佇列暫存 24 筆，連上後補送；閘門端寫 spool 檔補送。
 5. **功耗**：每 5 分鐘醒（>70% 改 2 分鐘），只在需要時連 Wi-Fi，感測器斷電。粗估平均 <0.5 mA，2×18650 可撐數月以上，**需實測**。
 
-> 本環境無法下載 ESP32 工具鏈，韌體尚未實際編譯過，第一次 build 請留意 library 版本差異。
+> 韌體已用 PlatformIO 編譯通過（Flash 用量約 90%），但尚未在實體 XIAO ESP32C3 上執行過。
 
 ## 視覺閘門（edge/vision-gate）
 
@@ -89,7 +89,7 @@ PlatformIO 專案，板子 `seeed_xiao_esp32c3`。先改 `include/config.h`（Wi
 sudo apt install imx500-all python3-picamera2 python3-gpiozero
 sudo cp smartbin-gate.service /etc/systemd/system/ && sudo systemctl enable --now smartbin-gate
 ```
-GPIO：伺服 18、綠燈 23、紅燈 24（`Cfg` 可改）。
+GPIO：伺服 18、綠燈 23、紅燈 24、蜂鳴器 25（`Cfg` 可改）。閘門每 60 秒向後端查桶子狀態，桶滿時小垃圾也不開閘；查不到就沿用上次結果。
 
 **模型**：預設類別 `cup, bottle, can, paper, lunchbox, garbage_bag, hand, litter`。
 1. 資料：TACO 公開資料集 + 自己在師大周邊拍的垃圾袋 / 飲料杯（含夜間）

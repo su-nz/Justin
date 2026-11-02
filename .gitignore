@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.pio/
+*.db
+*.db-shm
+*.db-wal
+# 模擬器產生的裝置 token
+sim/.tokens.json
+# broker 帳密與憑證
+deploy/mosquitto/passwd
+deploy/mosquitto/certs/
