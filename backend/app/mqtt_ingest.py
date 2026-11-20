@@ -42,4 +42,5 @@ def start(on_telemetry, on_event) -> None:
 
     cli.on_connect, cli.on_message = on_connect, on_message
     cli.connect_async(os.environ["MQTT_HOST"], int(os.environ.get("MQTT_PORT", "1883")))
-    threading.Thread(target=cli.loop_forever, daemon=True).start()
+    # broker 可能比後端晚起來：第一次連線失敗也要重試，否則這條執行緒會直接結束
+    threading.Thread(target=cli.loop_forever, kwargs={"retry_first_connection": True}, daemon=True).start()

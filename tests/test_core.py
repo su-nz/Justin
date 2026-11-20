@@ -63,3 +63,51 @@ def test_gate_rejects_bag_and_opens_for_cup():
     assert not act.is_open
     ev = up.q.get_nowait()
     assert ev["type"] == "bag_rejected"
+
+
+def _gate():
+    cfg = gate.Cfg()
+    act = gate.Actuators(cfg, dry=True)
+    up = gate.Uploader(cfg, offline=True)
+    return act, up, gate.Gate(cfg, act, up)
+
+
+def test_offline_threshold_matches_deck():
+    now = 100_000
+    assert logic.status_of([(now - 64 * 60, 10)], False, now=now).state == "available"
+    assert logic.status_of([(now - 66 * 60, 10)], False, now=now).state == "offline"
+
+
+def test_large_hand_holding_cup_still_opens():
+    act, up, g = _gate()
+    frame = [("cup", .9, (.45, .12, .52, .24)), ("hand", .9, (.38, .06, .60, .28))]
+    g.step(frame, 0); g.step(frame, 1)
+    assert act.is_open and up.q.empty()
+
+
+def test_bag_larger_than_slot_is_rejected_even_with_cup():
+    act, up, g = _gate()
+    frame = [("garbage_bag", .93, (.25, 0, .75, .5)), ("cup", .9, (.45, .1, .52, .2))]
+    g.step(frame, 0); g.step(frame, 1)
+    assert not act.is_open
+    assert up.q.get_nowait()["type"] == "bag_rejected"
+
+
+def test_full_bin_keeps_gate_shut_for_cup():
+    act, up, g = _gate()
+    g.bin_full = True
+    cup = [("cup", .9, (.45, .1, .52, .2))]
+    g.step(cup, 0); g.step(cup, 1)
+    assert not act.is_open
+    g.bin_full = False
+    g.step(cup, 2)
+    assert act.is_open
+
+
+def test_every_bag_attempt_gets_feedback_but_one_upload():
+    act, up, g = _gate()
+    blinks = []
+    act.reject = lambda: blinks.append(1)
+    bag = [("garbage_bag", .9, (.37, .06, .63, .34))]
+    g.step(bag, 0); g.step(bag, 1); g.step([], 5); g.step(bag, 30); g.step(bag, 31)
+    assert len(blinks) == 2 and up.q.qsize() == 1

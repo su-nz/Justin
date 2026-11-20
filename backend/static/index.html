@@ -34,14 +34,12 @@
   <div class="legend">
     <span><i class="dot" style="background:var(--g)"></i>有空位</span>
     <span><i class="dot" style="background:var(--y)"></i>快滿</span>
-    <span><i class="dot" style="background:var(--r)"></i>已滿</span>
-    <span><i class="dot" style="background:var(--k)"></i>維護中</span>
   </div>
 </div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-const COLORS={available:'#1f6f4a',near_full:'#c98a00',full:'#c0392b',offline:'#6b7280',fault:'#6b7280'};
-const LABEL={available:'有空位',near_full:'快滿了',full:'已滿',offline:'離線',fault:'維護中'};
+const COLORS={available:'#1f6f4a',near_full:'#c98a00'};
+const LABEL={available:'有空位',near_full:'快滿了'};
 const map=L.map('map',{zoomControl:false}).setView([25.0235,121.5300],15);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
 const layer=L.layerGroup().addTo(map);
@@ -53,6 +51,7 @@ async function loadBins(){
   const bins=await (await fetch('/api/bins')).json();
   layer.clearLayers();
   for(const b of bins){
+    if(!(b.state in COLORS)) continue;  // 已滿、離線、故障的桶不顯示給市民
     L.circleMarker([b.lat,b.lng],{radius:9,weight:2,color:'#fff',fillColor:COLORS[b.state],fillOpacity:.95})
       .bindPopup(`<b>${esc(b.name)}</b><br>${LABEL[b.state]}${b.fill_pct!=null?` · ${Math.round(b.fill_pct)}%`:''}`)
       .addTo(layer);
