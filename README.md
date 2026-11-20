@@ -61,7 +61,7 @@ ADMIN_TOKEN=... MQTT_BACKEND_PASS=... docker compose up -d
 
 ### Demo 主機（HTTP 上報、不啟動 MQTT）
 
-Demo Pi 只跑後端時，改用 [`deploy/docker-compose.demo.yml`](deploy/docker-compose.demo.yml)，依照 [`deploy/DEMO.md`](deploy/DEMO.md) 設定 `ADMIN_TOKEN` 與 `PUBLIC_URL`、建立持久化資料 volume，並設定 HTTPS 反向代理。該設定不包含 Mosquitto，且不會設定 `MQTT_HOST`。
+Demo 主機只跑後端時，改用 [`deploy/docker-compose.demo.yml`](deploy/docker-compose.demo.yml)，依照 [`deploy/DEMO.md`](deploy/DEMO.md) 設定 `ADMIN_TOKEN` 與 `PUBLIC_URL`、建立持久化資料 volume，並設定 HTTPS 反向代理。該設定不包含 Mosquitto，且不會設定 `MQTT_HOST`。
 
 ## 感測節點（firmware/sensor-node）
 
