@@ -59,6 +59,10 @@ ADMIN_TOKEN=... MQTT_BACKEND_PASS=... docker compose up -d
 - MQTT ACL：裝置帳號 = bin_id，只能寫 `smartbin/<自己>/#`；後端以 topic 的 id 為準，防冒名。
 - HTTP 上報（NB-IoT 節點、閘門）每桶獨立 token，建桶時只顯示一次，資料庫只存 SHA-256。
 
+### Demo 主機（HTTP 上報、不啟動 MQTT）
+
+Demo Pi 只跑後端時，改用 [`deploy/docker-compose.demo.yml`](deploy/docker-compose.demo.yml)，依照 [`deploy/DEMO.md`](deploy/DEMO.md) 設定 `ADMIN_TOKEN` 與 `PUBLIC_URL`、建立持久化資料 volume，並設定 HTTPS 反向代理。該設定不包含 Mosquitto，且不會設定 `MQTT_HOST`。
+
 ## 感測節點（firmware/sensor-node）
 
 PlatformIO 專案，板子 `seeed_xiao_esp32c3`。先改 `include/config.h`（Wi-Fi、MQTT、CA、桶深、校正值）再 `pio run -t upload`。

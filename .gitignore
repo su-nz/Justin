@@ -1,0 +1,4 @@
+# Local deployment secrets and generated device credentials
+.env
+deploy/.env
+deploy/*credentials*.json
