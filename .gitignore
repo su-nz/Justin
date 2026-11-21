@@ -10,3 +10,15 @@ sim/.tokens.json
 # broker 帳密與憑證
 deploy/mosquitto/passwd
 deploy/mosquitto/certs/
+# 金鑰與環境變數（token 一律不進 repo）
+.env
+.env.*
+*.pem
+*.key
+# 模型權重與資料集放共用雲端
+*.pt
+*.onnx
+*.rpk
+datasets/
+# macOS
+.DS_Store

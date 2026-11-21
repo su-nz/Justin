@@ -1,0 +1,41 @@
+# PR 標題要符合 CONTRIBUTING.md 的 commit 格式：<type>(<scope>): <摘要>
+# Squash 合併時 PR 標題就是 main 上的 commit 訊息，所以只檢查標題。
+name: PR 標題格式
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5.5.3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            test
+            refactor
+            chore
+          scopes: |
+            sensor
+            gate
+            vision
+            backend
+            line
+            web
+            deploy
+            repo
+          requireScope: true
+          # 摘要 1–50 字，不以句號結尾；中英文都可以
+          subjectPattern: ^(?!.*[.。]$).{1,50}$
+          subjectPatternError: |
+            摘要「{subject}」要在 50 字以內，而且不以句號結尾。
+            格式：<type>(<scope>): <摘要>，例如 feat(sensor): 新增 node_pi.py。見 CONTRIBUTING.md。
