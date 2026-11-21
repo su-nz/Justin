@@ -14,6 +14,7 @@ services:
     ports: ["8000:8000"]
     environment:
       ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN}
+      FULL_WEIGHT_G: ${FULL_WEIGHT_G:-}
       MQTT_HOST: mosquitto
       MQTT_USER: backend
       MQTT_PASS: ${MQTT_BACKEND_PASS:?set MQTT_BACKEND_PASS}

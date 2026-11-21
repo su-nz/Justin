@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import math
+import os
 import time
 from dataclasses import dataclass
 
@@ -26,6 +27,7 @@ class BinStatus:
     rate_pct_per_h: float | None
     hours_to_full: float | None
     last_seen: float | None
+    weight_g: float | None = None
 
 
 def classify(fill: float, prev_state: str | None) -> str:
@@ -68,10 +70,17 @@ def fill_rate(samples: list[tuple[float, float]]) -> float | None:
 
 
 def status_of(samples: list[tuple[float, float]], blocked: bool, prev_state: str | None = None,
-              now: float | None = None) -> BinStatus:
+              now: float | None = None, weight_g: float | None = None,
+              full_weight_g: float | None = None) -> BinStatus:
     now = now or time.time()
+    if full_weight_g is None:
+        configured = os.environ.get("FULL_WEIGHT_G")
+        try:
+            full_weight_g = float(configured) if configured else None
+        except ValueError:
+            full_weight_g = None
     if not samples:
-        return BinStatus("offline", None, None, None, None)
+        return BinStatus("offline", None, None, None, None, weight_g)
     last_ts, last_fill = samples[-1]
     rate = fill_rate(samples)
     htf = None
@@ -81,10 +90,13 @@ def status_of(samples: list[tuple[float, float]], blocked: bool, prev_state: str
         state = "offline"
     elif blocked:
         state = "fault"
+    elif full_weight_g is not None and weight_g is not None and weight_g >= full_weight_g:
+        state = "full"
     else:
         state = classify(last_fill, prev_state)
     return BinStatus(state, round(last_fill, 1), None if rate is None else round(rate, 2),
-                     None if htf is None else round(htf, 2), last_ts)
+                     None if htf is None else round(htf, 2), last_ts,
+                     None if weight_g is None else round(weight_g, 1))
 
 
 def fuse_ground_event(fill_pct: float | None) -> str:

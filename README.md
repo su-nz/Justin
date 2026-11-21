@@ -55,6 +55,7 @@ mosquitto_passwd -c mosquitto/passwd backend && mosquitto_passwd mosquitto/passw
 # 放 TLS 憑證到 mosquitto/certs/
 ADMIN_TOKEN=... MQTT_BACKEND_PASS=... docker compose up -d
 ```
+- Optional: set `FULL_WEIGHT_G` to mark a bin full once its latest reported weight reaches that many grams, even when its fill level is low. Leave it unset to disable weight-based full status.
 - 對外請經反向代理上 HTTPS（LINE webhook 規定）。
 - MQTT ACL：裝置帳號 = bin_id，只能寫 `smartbin/<自己>/#`；後端以 topic 的 id 為準，防冒名。
 - HTTP 上報（NB-IoT 節點、閘門）每桶獨立 token，建桶時只顯示一次，資料庫只存 SHA-256。
