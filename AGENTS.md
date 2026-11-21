@@ -4,7 +4,7 @@
 
 ## 專案
 
-NTNU CSC9017 物聯網期末專題：智慧垃圾桶。Demo 版是 1 台 Raspberry Pi 4 接超音波、LCD、LED、蜂鳴器、PIR、SG90 擋板和相機，資料上傳到 FastAPI 後端，市民用地圖和 LINE 找有空位的桶。
+NTNU CSC9017 物聯網期末專題：智慧垃圾桶。Demo 版是 1 台 Raspberry Pi 4 接超音波、HX711 秤重、LCD、LED、蜂鳴器、PIR、SG90 擋板和相機，資料上傳到 FastAPI 後端，市民用地圖和 LINE 找有空位的桶。
 
 | 路徑 | 內容 |
 |---|---|
@@ -30,7 +30,7 @@ python edge/vision-gate/gate.py --backend mock --scenario edge/vision-gate/scena
 ## 規則
 
 - **設定用環境變數**：`SMARTBIN_API`、`BIN_ID`、`DEVICE_TOKEN`；後端另有 `ADMIN_TOKEN`、`PUBLIC_URL`、`LINE_CHANNEL_SECRET`、`LINE_CHANNEL_ACCESS_TOKEN`。不要把 token 寫死在程式、測試或 commit 裡。
-- **GPIO 分配**（同一台 Pi 4，不要互相搶）：`node_pi.py` 用 GPIO5（Trig）、GPIO6（Echo）、I²C LCD（0x27）；`gate.py` 用 GPIO18（伺服）、23/24（LED）、25（蜂鳴器）；GPIO17（PIR）保留。
+- **GPIO 分配**（同一台 Pi 4，不要互相搶）：`node_pi.py` 用 GPIO5（Trig）、GPIO6（Echo）、GPIO22／27（HX711 秤重 DT／SCK）、I²C LCD（0x27）；`gate.py` 用 GPIO18（伺服）、23/24（LED）、25（蜂鳴器）；GPIO17（PIR）保留。
 - **API 介面**：感測 `POST /api/telemetry`、閘門 `POST /api/events`，都帶 header `X-Device-Token`。改欄位要同步改 README、issue #1 和呼叫端。
 - **能在筆電驗證就先驗證**：硬體相關程式要提供 `--dry` 或 mock 模式，讓沒有 Pi 也能跑。
 - **測試**：改到 `backend/` 或 `edge/vision-gate/` 的邏輯，`python -m pytest tests -q` 要全過，行為改變要補測試。
