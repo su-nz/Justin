@@ -83,6 +83,31 @@ def coverage(boxes, roi, grid=48) -> float:
     return hit / (grid * grid)
 
 
+# ----------------------------------------------------------------------------- COCO（#11 L1：免訓練模型）
+# Ultralytics 預訓練 YOLO11n 的 80 類，順序即模型輸出的類別編號
+COCO_NAMES = (
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+    "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
+    "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone",
+    "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
+    "hair drier", "toothbrush",
+)
+# COCO 類別 → 閘門類別。沒列到的一律 "other"：不會開閘，但體積過大一樣走「太大就拒收」
+COCO_TO_GATE = {
+    "cup": "cup", "wine glass": "cup", "bottle": "bottle",
+    "person": "hand",                                                         # 有人在投入口就不關閘
+    "handbag": "garbage_bag", "backpack": "garbage_bag", "suitcase": "garbage_bag",  # 袋狀物直接拒收
+}
+
+
+def coco_to_gate(name: str) -> str:
+    return COCO_TO_GATE.get(name, "other")
+
+
 # ----------------------------------------------------------------------------- detectors
 class MockDetector:
     """情境檔：[{"t": 0, "dets": [["cup", 0.9, [x0,y0,x1,y1]], ...]}, ...]，每筆是一幀。"""
@@ -138,12 +163,15 @@ class IMX500Detector:
 class OnnxDetector:
     """USB 攝影機 + YOLO11 ONNX（輸出 [1, 4+nc, N]）。"""
 
-    def __init__(self, model_path, labels, conf, cam_index=0, imgsz=640):
+    def __init__(self, model_path, labels, conf, cam_index=0, imgsz=None, remap=None):
         import cv2
         import onnxruntime as ort
-        self.cv2, self.labels, self.conf, self.imgsz = cv2, labels, conf, imgsz
+        self.cv2, self.labels, self.conf, self.remap = cv2, labels, conf, remap
         self.sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
-        self.inp = self.sess.get_inputs()[0].name
+        inp = self.sess.get_inputs()[0]
+        self.inp = inp.name
+        # 沒指定就用模型本身的輸入尺寸（例如 imgsz=320 匯出的模型），動態尺寸才退回 640
+        self.imgsz = imgsz or (inp.shape[2] if isinstance(inp.shape[2], int) else 640)
         self.cap = cv2.VideoCapture(cam_index)
 
     def detect(self):
@@ -167,7 +195,8 @@ class OnnxDetector:
         out = []
         for i in (idx.flatten() if len(idx) else []):
             x0, y0, bw, bh = rects[i]
-            out.append((self.labels[int(cls[i])], float(sc[i]), (x0, y0, x0 + bw, y0 + bh)))
+            name = self.labels[int(cls[i])]
+            out.append((self.remap(name) if self.remap else name, float(sc[i]), (x0, y0, x0 + bw, y0 + bh)))
         return out
 
 
@@ -348,6 +377,9 @@ def main():
     ap.add_argument("--dry", action="store_true", help="不驅動 GPIO")
     ap.add_argument("--offline", action="store_true", help="不上傳，只印事件")
     ap.add_argument("--sim-dt", type=float, default=0, help="mock 時每幀推進的模擬秒數")
+    ap.add_argument("--labels", choices=["smartbin", "coco"], default="smartbin",
+                    help="onnx 模型的類別：smartbin＝自訓 8 類；coco＝預訓練 80 類，對應到閘門類別（#11）")
+    ap.add_argument("--imgsz", type=int, help="onnx 輸入尺寸，預設讀模型本身的設定")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
@@ -355,7 +387,10 @@ def main():
     if a.backend == "mock":
         det = MockDetector(a.scenario)
     elif a.backend == "onnx":
-        det = OnnxDetector(a.model, cfg.labels, cfg.conf)
+        if a.labels == "coco":
+            det = OnnxDetector(a.model, COCO_NAMES, cfg.conf, imgsz=a.imgsz, remap=coco_to_gate)
+        else:
+            det = OnnxDetector(a.model, cfg.labels, cfg.conf, imgsz=a.imgsz)
     else:
         det = IMX500Detector(a.model, cfg.labels, cfg.conf)
 
@@ -368,11 +403,18 @@ def main():
         watcher.poll()
         watcher.start()
     t = time.time()
+    n_det, det_s = 0, 0.0
     try:
         while True:
+            t0 = time.perf_counter()
             dets = det.detect()
             if dets is None:
                 break
+            if a.backend != "mock":  # 每 20 幀印一次偵測速度，給 12/1 判斷點量 FPS（不含 --fps 的等待）
+                n_det, det_s = n_det + 1, det_s + time.perf_counter() - t0
+                if n_det == 20:
+                    log.info("detect %.0f ms/幀 → 最高約 %.1f FPS", det_s / n_det * 1000, n_det / det_s)
+                    n_det, det_s = 0, 0.0
             t = t + a.sim_dt if a.sim_dt else time.time()
             gate.step(dets, t)
             if not a.sim_dt:

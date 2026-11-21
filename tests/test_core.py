@@ -111,3 +111,19 @@ def test_every_bag_attempt_gets_feedback_but_one_upload():
     bag = [("garbage_bag", .9, (.37, .06, .63, .34))]
     g.step(bag, 0); g.step(bag, 1); g.step([], 5); g.step(bag, 30); g.step(bag, 31)
     assert len(blinks) == 2 and up.q.qsize() == 1
+
+
+def test_coco_labels_map_to_gate_classes():
+    assert len(gate.COCO_NAMES) == 80 and gate.COCO_NAMES[41] == "cup" and gate.COCO_NAMES[39] == "bottle"
+    assert [gate.coco_to_gate(n) for n in ("cup", "wine glass", "person", "handbag", "dog")] == \
+        ["cup", "cup", "hand", "garbage_bag", "other"]
+
+
+def test_unknown_coco_object_never_opens_but_big_one_is_rejected():
+    act, up, g = _gate()
+    small = [("other", .9, (.45, .1, .55, .2))]
+    g.step(small, 0); g.step(small, 1)
+    assert not act.is_open and up.q.qsize() == 0
+    big = [("other", .9, (.36, .06, .64, .34))]
+    g.step(big, 2); g.step(big, 3)
+    assert not act.is_open and up.q.qsize() == 1
