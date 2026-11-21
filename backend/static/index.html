@@ -44,12 +44,19 @@ const map=L.map('map',{zoomControl:false}).setView([25.0235,121.5300],15);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
 const layer=L.layerGroup().addTo(map);
 let me=null, meMarker=null, line=null;
+// ?demo=1：現場 Demo 用，每 5 秒更新並把地圖移到 NTNU-01（?bin= 可換桶）；平常 60 秒
+const Q=new URLSearchParams(location.search), DEMO=Q.get('demo')==='1', FOCUS=Q.get('bin')||'NTNU-01';
+let focused=false;
 
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 
 async function loadBins(){
   const bins=await (await fetch('/api/bins')).json();
   layer.clearLayers();
+  if(DEMO&&!focused){  // 用桶的實際座標，不寫死；已滿被隱藏時一樣對準
+    const f=bins.find(b=>b.id===FOCUS);
+    if(f){map.setView([f.lat,f.lng],17);focused=true}
+  }
   for(const b of bins){
     if(!(b.state in COLORS)) continue;  // 已滿、離線、故障的桶不顯示給市民
     L.circleMarker([b.lat,b.lng],{radius:9,weight:2,color:'#fff',fillColor:COLORS[b.state],fillOpacity:.95})
@@ -86,7 +93,7 @@ document.getElementById('go').onclick=async()=>{
   document.getElementById('go').textContent='重新尋找';
 };
 
-loadBins(); setInterval(loadBins,60000);
+loadBins(); setInterval(loadBins,DEMO?5000:60000);
 if('serviceWorker' in navigator) navigator.serviceWorker.register('/static/sw.js');
 </script>
 </body>

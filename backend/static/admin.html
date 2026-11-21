@@ -58,17 +58,28 @@ sessionStorage.setItem('adm',TOKEN);
 document.getElementById('logout').onclick=()=>{sessionStorage.removeItem('adm');location.reload()};
 const H={'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// ?demo=1：現場 Demo 用，每 5 秒更新並把地圖移到 NTNU-01（?bin= 可換桶）；平常 30 秒
+const Q=new URLSearchParams(location.search), DEMO=Q.get('demo')==='1', FOCUS=Q.get('bin')||'NTNU-01';
+let focused=false;
+const ago=t=>{if(t==null)return'-';const s=Math.max(0,Date.now()/1000-t);
+  return s<60?`${Math.round(s)} 秒前`:s<3600?`${Math.floor(s/60)} 分前`:new Date(t*1000).toLocaleString()};
 
 const map=L.map('map').setView([25.0215,121.5310],15);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
 const binLayer=L.layerGroup().addTo(map), routeLayer=L.layerGroup().addTo(map);
 
 async function loadBins(){
-  const bins=await (await fetch('/api/bins')).json();
+  const r=await fetch('/api/admin/bins',{headers:H});
+  if(!r.ok) return;  // token 錯誤由 loadEvents 提示並重新登入
+  const bins=await r.json();
   binLayer.clearLayers();
-  document.getElementById('bins').innerHTML='<tr><th>ID</th><th>位置</th><th>狀態</th><th>%</th><th>滿前(h)</th></tr>'+
+  if(DEMO&&!focused){
+    const f=bins.find(b=>b.id===FOCUS);
+    if(f){map.setView([f.lat,f.lng],17);focused=true}
+  }
+  document.getElementById('bins').innerHTML='<tr><th>ID</th><th>位置</th><th>狀態</th><th>%</th><th>滿前(h)</th><th>最後上傳</th></tr>'+
     bins.map(b=>`<tr><td>${esc(b.id)}</td><td>${esc(b.name)}</td><td><span class="pill" style="background:${C[b.state]}">${b.state}</span></td>
-      <td>${b.fill_pct??'-'}</td><td>${b.hours_to_full??'-'}</td></tr>`).join('');
+      <td>${b.fill_pct??'-'}</td><td>${b.hours_to_full??'-'}</td><td>${ago(b.last_seen)}</td></tr>`).join('');
   bins.forEach(b=>L.circleMarker([b.lat,b.lng],{radius:8,color:'#fff',weight:2,fillColor:C[b.state],fillOpacity:.95})
     .bindTooltip(`${esc(b.id)} ${esc(b.name)} ${b.fill_pct??'-'}%`).addTo(binLayer));
 }
@@ -103,7 +114,7 @@ document.getElementById('plan').onclick=async()=>{
       html:`<div style="background:${VCOL[rt.vehicle%5]};color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;font-size:12px;font-weight:700">${i+1}</div>`})}).addTo(routeLayer));
   });
 };
-loadBins();loadEvents();setInterval(()=>{loadBins();loadEvents()},30000);
+loadBins();loadEvents();setInterval(()=>{loadBins();loadEvents()},DEMO?5000:30000);
 </script>
 </body>
 </html>
