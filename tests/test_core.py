@@ -1,11 +1,12 @@
 """核心邏輯單元測試：python -m pytest tests -q（在 smartbin/ 下執行）"""
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "backend"), str(ROOT / "edge" / "vision-gate")]
 
-from app import logic, routing  # noqa: E402
+from app import db, logic, main, routing  # noqa: E402
 import gate  # noqa: E402
 
 
@@ -76,6 +77,48 @@ def test_offline_threshold_matches_deck():
     now = 100_000
     assert logic.status_of([(now - 64 * 60, 10)], False, now=now).state == "available"
     assert logic.status_of([(now - 66 * 60, 10)], False, now=now).state == "offline"
+
+
+def test_large_light_bin_still_uses_fill_level(monkeypatch):
+    monkeypatch.setenv("FULL_WEIGHT_G", "1000")
+    status = logic.status_of([(100_000, 95)], False, now=100_001, weight_g=200)
+    assert status.state == "full"
+    assert status.weight_g == 200
+
+
+def test_small_heavy_bin_is_full_when_weight_threshold_is_enabled(monkeypatch):
+    monkeypatch.setenv("FULL_WEIGHT_G", "1000")
+    status = logic.status_of([(100_000, 20)], False, now=100_001, weight_g=1200)
+    assert status.state == "full"
+
+
+def test_weight_threshold_is_disabled_when_unset(monkeypatch):
+    monkeypatch.delenv("FULL_WEIGHT_G", raising=False)
+    status = logic.status_of([(100_000, 20)], False, now=100_001, weight_g=1200)
+    assert status.state == "available"
+
+
+def test_blocked_sensor_status_keeps_latest_weight(monkeypatch):
+    monkeypatch.setenv("FULL_WEIGHT_G", "1000")
+    status = logic.status_of([(100_000, 20)], True, now=100_001, weight_g=1200)
+    assert status.state == "fault"
+    assert status.weight_g == 1200
+
+
+def test_all_bins_include_latest_weight_and_null_when_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "smartbin.db"))
+    db.init_db()
+    now = time.time()
+    with db.conn() as c:
+        c.execute("INSERT INTO bins(id,name,lat,lng,token_hash,created_at) VALUES(?,?,?,?,?,?)",
+                  ("NTNU-01", "師大一號", 25.0, 121.5, "", now))
+        c.execute("INSERT INTO bins(id,name,lat,lng,token_hash,created_at) VALUES(?,?,?,?,?,?)",
+                  ("EMPTY", "無資料", 25.0, 121.5, "", now))
+        c.execute("INSERT INTO telemetry(bin_id,ts,fill_pct,weight_g,blocked) VALUES(?,?,?,?,?)",
+                  ("NTNU-01", now, 20, 750.5, 0))
+    bins = {b["id"]: b for b in main._all_bins()}
+    assert bins["NTNU-01"]["weight_g"] == 750.5
+    assert bins["EMPTY"]["weight_g"] is None
 
 
 def test_large_hand_holding_cup_still_opens():

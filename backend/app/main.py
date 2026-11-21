@@ -148,10 +148,15 @@ def _bin_status(bin_id: str, now: float | None = None) -> logic.BinStatus | None
     if not rows:
         return logic.status_of([], False, now=now)
     samples = [(r["ts"], r["fill_pct"]) for r in rows]
+    with db.conn() as c:
+        latest_weight = c.execute(
+            "SELECT weight_g FROM telemetry WHERE bin_id=? AND ts>? AND weight_g IS NOT NULL ORDER BY ts DESC LIMIT 1",
+            (bin_id, now - 24 * 3600)).fetchone()
+    weight_g = latest_weight["weight_g"] if latest_weight else None
     prev = None  # 依時間跑一遍狀態機，讓遲滯生效
     for _, f in samples[-12:-1]:
         prev = logic.classify(f, prev)
-    return logic.status_of(samples, bool(rows[-1]["blocked"]), prev, now)
+    return logic.status_of(samples, bool(rows[-1]["blocked"]), prev, now, weight_g)
 
 
 def _all_bins() -> list[dict]:
@@ -167,7 +172,7 @@ def _all_bins() -> list[dict]:
     for b in bins:
         st = _bin_status(b["id"])
         b.update(state=st.state, fill_pct=st.fill_pct, rate_pct_per_h=st.rate_pct_per_h,
-                 hours_to_full=st.hours_to_full, last_seen=st.last_seen,
+                 hours_to_full=st.hours_to_full, last_seen=st.last_seen, weight_g=st.weight_g,
                  open_events=open_ev.get(b["id"], []), has_gate=bool(b["has_gate"]))
     return bins
 
@@ -229,7 +234,7 @@ def dispatch_latest():
 
 
 # ---------------------------------------------------------------- routes: public
-PUBLIC_FIELDS = ("id", "name", "lat", "lng", "state", "fill_pct", "hours_to_full", "has_gate")
+PUBLIC_FIELDS = ("id", "name", "lat", "lng", "state", "fill_pct", "weight_g", "hours_to_full", "has_gate")
 
 
 @app.get("/api/bins")
