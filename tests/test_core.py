@@ -115,7 +115,7 @@ def test_all_bins_include_latest_weight_and_null_when_missing(monkeypatch, tmp_p
         c.execute("INSERT INTO bins(id,name,lat,lng,token_hash,created_at) VALUES(?,?,?,?,?,?)",
                   ("EMPTY", "無資料", 25.0, 121.5, "", now))
         c.execute("INSERT INTO telemetry(bin_id,ts,fill_pct,weight_g,blocked) VALUES(?,?,?,?,?)",
-                  ("NTNU-01", now, 20, 750.5, 0))
+                  ("NTNU-01", now - 2 * 24 * 3600, 20, 750.5, 0))
     bins = {b["id"]: b for b in main._all_bins()}
     assert bins["NTNU-01"]["weight_g"] == 750.5
     assert bins["EMPTY"]["weight_g"] is None

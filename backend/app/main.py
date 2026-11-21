@@ -162,7 +162,9 @@ def _bin_status(bin_id: str, now: float | None = None) -> logic.BinStatus | None
 def _all_bins() -> list[dict]:
     with db.conn() as c:
         bins = [dict(r) for r in c.execute(
-            "SELECT id,name,lat,lng,capacity_l,depth_mm,has_gate FROM bins ORDER BY id")]
+            "SELECT b.id,b.name,b.lat,b.lng,b.capacity_l,b.depth_mm,b.has_gate,"
+            "(SELECT t.weight_g FROM telemetry t WHERE t.bin_id=b.id AND t.weight_g IS NOT NULL "
+            "ORDER BY t.ts DESC LIMIT 1) AS weight_g FROM bins b ORDER BY b.id")]
         evs = c.execute("SELECT bin_id, type FROM events WHERE resolved=0 AND ts>?",
                         (time.time() - 24 * 3600,)).fetchall()
     open_ev: dict[str, list[str]] = {}
@@ -172,7 +174,7 @@ def _all_bins() -> list[dict]:
     for b in bins:
         st = _bin_status(b["id"])
         b.update(state=st.state, fill_pct=st.fill_pct, rate_pct_per_h=st.rate_pct_per_h,
-                 hours_to_full=st.hours_to_full, last_seen=st.last_seen, weight_g=st.weight_g,
+                 hours_to_full=st.hours_to_full, last_seen=st.last_seen,
                  open_events=open_ev.get(b["id"], []), has_gate=bool(b["has_gate"]))
     return bins
 
