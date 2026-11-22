@@ -93,7 +93,15 @@ PlatformIO 專案，板子 `seeed_xiao_esp32c3`。先改 `include/config.h`（Wi
 sudo apt install imx500-all python3-picamera2 python3-gpiozero
 sudo cp smartbin-gate.service /etc/systemd/system/ && sudo systemctl enable --now smartbin-gate
 ```
-GPIO：伺服 18、綠燈 23、紅燈 24、蜂鳴器 25（`Cfg` 可改）。閘門每 60 秒向後端查桶子狀態，桶滿時小垃圾也不開閘；查不到就沿用上次結果。
+GPIO：伺服 18、綠燈 23、紅燈 24、蜂鳴器 25（`Cfg` 可改）。
+
+**劇本模式（#6）**：視覺還沒好之前，用 mock 劇本驅動實體擋板。伺服走 pigpio 的硬體計時 PWM，比較不會抖。
+```bash
+sudo apt install -y pigpio python3-pigpio && sudo systemctl enable --now pigpiod
+python3 edge/vision-gate/gate.py --backend mock --scenario edge/vision-gate/scenarios/demo.json --drive --fps 1 --offline
+```
+擋板沒開或關到位時，用 `--open-angle`／`--close-angle`（0–180°，預設 90／0；0.5–2.5 ms 對應 0–180°）對齊實物。
+閘門每 60 秒向後端查桶子狀態，桶滿時小垃圾也不開閘；查不到就沿用上次結果。
 
 **模型**：預設類別 `cup, bottle, can, paper, lunchbox, garbage_bag, hand, litter`。
 1. 資料：TACO 公開資料集 + 自己在師大周邊拍的垃圾袋 / 飲料杯（含夜間）

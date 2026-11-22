@@ -111,3 +111,91 @@ def test_every_bag_attempt_gets_feedback_but_one_upload():
     bag = [("garbage_bag", .9, (.37, .06, .63, .34))]
     g.step(bag, 0); g.step(bag, 1); g.step([], 5); g.step(bag, 30); g.step(bag, 31)
     assert len(blinks) == 2 and up.q.qsize() == 1
+
+
+def test_mock_drives_hardware_only_with_drive_flag():
+    ns = lambda **kw: type("A", (), {"dry": False, "drive": False, "backend": "mock", **kw})()
+    assert gate.actuators_dry(ns()) is True                    # 劇本預設不碰 GPIO
+    assert gate.actuators_dry(ns(drive=True)) is False         # --drive 驅動實體元件
+    assert gate.actuators_dry(ns(drive=True, dry=True)) is True  # --dry 優先
+    assert gate.actuators_dry(ns(backend="onnx")) is False
+
+
+def _fake_gpiozero(monkeypatch, pigpio_ok):
+    import types
+    made = {}
+
+    class Dev:
+        def __init__(self, pin, **kw):
+            self.pin, self.kw, self.angle = pin, kw, None
+            made.setdefault(type(self).__name__, []).append(self)
+
+        def on(self): pass
+        def off(self): pass
+        def blink(self, **kw): pass
+        def beep(self, **kw): pass
+        def detach(self): pass
+
+    class AngularServo(Dev):
+        history = []
+
+        @property
+        def angle(self):
+            return self.history[-1] if self.history else None
+
+        @angle.setter
+        def angle(self, v):
+            if v is not None:
+                self.history.append(v)
+    class LED(Dev): pass
+    class Buzzer(Dev): pass
+
+    class PiGPIOFactory:
+        def __init__(self):
+            if not pigpio_ok:
+                raise OSError("failed to connect to localhost:8888")
+
+    gz = types.ModuleType("gpiozero")
+    gz.AngularServo, gz.LED, gz.Buzzer = AngularServo, LED, Buzzer
+    pins = types.ModuleType("gpiozero.pins")
+    pig = types.ModuleType("gpiozero.pins.pigpio")
+    pig.PiGPIOFactory = PiGPIOFactory
+    monkeypatch.setitem(sys.modules, "gpiozero", gz)
+    monkeypatch.setitem(sys.modules, "gpiozero.pins", pins)
+    monkeypatch.setitem(sys.modules, "gpiozero.pins.pigpio", pig)
+    return made, PiGPIOFactory
+
+
+def test_actuators_servo_uses_pigpio_and_configured_angles(monkeypatch):
+    made, factory = _fake_gpiozero(monkeypatch, pigpio_ok=True)
+    cfg = gate.Cfg()
+    cfg.servo_open_angle, cfg.servo_close_angle = 100, 10
+    act = gate.Actuators(cfg, dry=False)
+    servo = made["AngularServo"][0]
+    assert servo.pin == 18
+    assert servo.kw["min_pulse_width"] == 0.0005 and servo.kw["max_pulse_width"] == 0.0025
+    assert (servo.kw["min_angle"], servo.kw["max_angle"]) == (0, 180)
+    assert isinstance(servo.kw["pin_factory"], factory)
+    assert servo.angle == 10       # 建立時先關閘
+    act.open()
+    assert servo.angle == 100
+    act.close()
+    assert servo.angle == 10
+
+
+def test_actuators_fall_back_without_pigpiod(monkeypatch):
+    made, _ = _fake_gpiozero(monkeypatch, pigpio_ok=False)
+    gate.Actuators(gate.Cfg(), dry=False)
+    assert made["AngularServo"][0].kw["pin_factory"] is None  # pigpiod 沒開也能跑，只是會抖
+
+
+def test_mock_drive_runs_demo_scenario(monkeypatch):
+    made, _ = _fake_gpiozero(monkeypatch, pigpio_ok=True)
+    monkeypatch.setattr(gate.time, "sleep", lambda s: None)
+    scenario = str(ROOT / "edge" / "vision-gate" / "scenarios" / "demo.json")
+    gate.main(["--backend", "mock", "--scenario", scenario, "--offline", "--sim-dt", "30",
+               "--drive", "--open-angle", "80"])
+    servo = made["AngularServo"][0]
+    assert made["LED"] and made["Buzzer"]
+    assert 80 in servo.history          # 劇本裡的杯子讓實體擋板打開到 --open-angle
+    assert servo.history[-1] == 0       # 結束時關閘

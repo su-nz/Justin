@@ -50,6 +50,11 @@ class Cfg:
     reject_cooldown_s: float = 60.0
     ground_cooldown_s: float = 900.0
     servo_pin: int = 18
+    # SG90：0.5–2.5 ms 對應 0–180°。開／關角度以擋板實際到位為準，可用 --open-angle / --close-angle 調
+    servo_min_pulse: float = 0.0005
+    servo_max_pulse: float = 0.0025
+    servo_open_angle: float = 90.0
+    servo_close_angle: float = 0.0
     led_green: int = 23
     led_red: int = 24
     buzzer_pin: int = 25
@@ -172,14 +177,29 @@ class OnnxDetector:
 
 
 # ----------------------------------------------------------------------------- actuators
+def servo_pin_factory():
+    """伺服用 pigpio 的硬體計時 PWM，比 gpiozero 預設的軟體 PWM 穩，不會抖。
+
+    要先 sudo systemctl enable --now pigpiod；沒開就退回預設，並提醒一次。
+    """
+    try:
+        from gpiozero.pins.pigpio import PiGPIOFactory
+        return PiGPIOFactory()
+    except Exception as e:  # 沒裝 pigpio、pigpiod 沒啟動
+        log.warning("伺服改用軟體 PWM，可能會抖（%s）；請執行 sudo systemctl enable --now pigpiod", e)
+        return None
+
+
 class Actuators:
     def __init__(self, cfg: Cfg, dry: bool):
         self.dry = dry
+        self.cfg = cfg
         if not dry:
             from gpiozero import LED, AngularServo, Buzzer
-            # SG90 / MG90S：0.5–2.5 ms 對應 0–180°，所以 90° 是 1.5 ms
-            self.servo = AngularServo(cfg.servo_pin, min_angle=0, max_angle=90,
-                                      min_pulse_width=0.0005, max_pulse_width=0.0015)
+            self.servo = AngularServo(cfg.servo_pin, min_angle=0, max_angle=180,
+                                      min_pulse_width=cfg.servo_min_pulse,
+                                      max_pulse_width=cfg.servo_max_pulse,
+                                      pin_factory=servo_pin_factory())
             self.g, self.r = LED(cfg.led_green), LED(cfg.led_red)
             self.buzzer = Buzzer(cfg.buzzer_pin)
         self.is_open = False
@@ -189,7 +209,7 @@ class Actuators:
         self.is_open = True
         log.info("GATE OPEN")
         if not self.dry:
-            self.servo.angle = 90
+            self.servo.angle = self.cfg.servo_open_angle
             self.g.on()
             self.r.off()
 
@@ -197,7 +217,7 @@ class Actuators:
         self.is_open = False
         log.info("GATE CLOSE")
         if not self.dry:
-            self.servo.angle = 0
+            self.servo.angle = self.cfg.servo_close_angle
             self.g.off()
 
     def reject(self):
@@ -339,19 +359,36 @@ class Gate:
                 self.last_ground = now
 
 
-def main():
+def actuators_dry(a) -> bool:
+    """--dry 一律不碰 GPIO；mock 劇本預設也不碰，加 --drive 才驅動實體元件。"""
+    return a.dry or (a.backend == "mock" and not a.drive)
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--backend", choices=["imx500", "onnx", "mock"], default="imx500")
     ap.add_argument("--model", default="/opt/smartbin/models/network.rpk")
     ap.add_argument("--scenario", help="mock 情境檔")
     ap.add_argument("--fps", type=float, default=5)
     ap.add_argument("--dry", action="store_true", help="不驅動 GPIO")
+    ap.add_argument("--drive", action="store_true",
+                    help="mock 劇本也驅動實體伺服、LED、蜂鳴器（#6 劇本模式；建議搭配 --fps 1）")
+    ap.add_argument("--open-angle", type=float, help="擋板打開時的伺服角度（0–180，預設 90）")
+    ap.add_argument("--close-angle", type=float, help="擋板關閉時的伺服角度（0–180，預設 0）")
     ap.add_argument("--offline", action="store_true", help="不上傳，只印事件")
     ap.add_argument("--sim-dt", type=float, default=0, help="mock 時每幀推進的模擬秒數")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
+    for name in ("open_angle", "close_angle"):
+        v = getattr(a, name)
+        if v is not None and not 0 <= v <= 180:
+            ap.error(f"--{name.replace('_', '-')} 要在 0–180 之間")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
     cfg = Cfg()
+    if a.open_angle is not None:
+        cfg.servo_open_angle = a.open_angle
+    if a.close_angle is not None:
+        cfg.servo_close_angle = a.close_angle
     if a.backend == "mock":
         det = MockDetector(a.scenario)
     elif a.backend == "onnx":
@@ -359,7 +396,7 @@ def main():
     else:
         det = IMX500Detector(a.model, cfg.labels, cfg.conf)
 
-    act = Actuators(cfg, dry=a.dry or a.backend == "mock")
+    act = Actuators(cfg, dry=actuators_dry(a))
     up = Uploader(cfg, offline=a.offline)
     up.start()
     gate = Gate(cfg, act, up)
