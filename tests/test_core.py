@@ -111,3 +111,9 @@ def test_every_bag_attempt_gets_feedback_but_one_upload():
     bag = [("garbage_bag", .9, (.37, .06, .63, .34))]
     g.step(bag, 0); g.step(bag, 1); g.step([], 5); g.step(bag, 30); g.step(bag, 31)
     assert len(blinks) == 2 and up.q.qsize() == 1
+
+
+def test_camera_source_index_or_path():
+    assert gate.camera_source("0") == 0
+    assert gate.camera_source(" 2 ") == 2
+    assert gate.camera_source("/dev/video2") == "/dev/video2"
