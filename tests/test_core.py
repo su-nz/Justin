@@ -1,6 +1,7 @@
 """核心邏輯單元測試：python -m pytest tests -q（在 smartbin/ 下執行）"""
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "backend"), str(ROOT / "edge" / "vision-gate")]
@@ -133,3 +134,39 @@ def test_camera_source_index_or_path():
     assert gate.camera_source("0") == 0
     assert gate.camera_source(" 2 ") == 2
     assert gate.camera_source("/dev/video2") == "/dev/video2"
+
+
+def test_effective_fps_counts_only_processed_frames(monkeypatch, caplog):
+    elapsed = 0.0
+
+    def advance(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+
+    monkeypatch.setattr(gate, "time", SimpleNamespace(
+        time=lambda: elapsed, perf_counter=lambda: elapsed, sleep=advance,
+    ))
+    monkeypatch.setattr(gate.Uploader, "start", lambda self: None)
+    detector = gate.OnnxDetector.__new__(gate.OnnxDetector)
+    detector.cap = SimpleNamespace(read=lambda: (False, None))
+    failed_frame = detector.detect
+
+    def processed_frame():
+        advance(0.2)
+        return []
+
+    # One window with no frames, one with a mix, and one with valid empty detections.
+    frames = iter([failed_frame] * 30 + [processed_frame] * 30)
+
+    def detect():
+        frame = next(frames, None)
+        return frame() if frame is not None else None
+
+    monkeypatch.setattr(gate, "OnnxDetector", lambda *args, **kwargs: SimpleNamespace(detect=detect))
+    monkeypatch.setattr(sys, "argv", ["gate.py", "--backend", "onnx", "--offline", "--dry"])
+    with caplog.at_level("INFO", logger="gate"):
+        gate.main()
+
+    assert "實際 0.0 FPS（有效影格 0/20" in caplog.text
+    assert "實際 1.7 FPS（有效影格 10/20" in caplog.text
+    assert "實際 2.5 FPS（有效影格 20/20" in caplog.text

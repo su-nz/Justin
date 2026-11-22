@@ -109,6 +109,10 @@ def coco_to_gate(name: str) -> str:
 
 
 # ----------------------------------------------------------------------------- detectors
+# 空清單代表一幀已處理但沒有辨識結果，None 代表劇本播放完畢。
+FRAME_UNAVAILABLE = object()
+
+
 class MockDetector:
     """情境檔：[{"t": 0, "dets": [["cup", 0.9, [x0,y0,x1,y1]], ...]}, ...]，每筆是一幀。"""
 
@@ -143,7 +147,7 @@ class IMX500Detector:
         md = self.cam.capture_metadata()
         out = self.imx.get_outputs(md, add_batch=True)
         if out is None:
-            return []
+            return FRAME_UNAVAILABLE
         boxes, scores, classes = out[0][0], out[1][0], out[2][0]
         if self.intr is not None and getattr(self.intr, "bbox_normalization", False):
             _, in_h = self.imx.get_input_size()
@@ -183,11 +187,11 @@ class OnnxDetector:
             raise SystemExit(f"打不開攝影機 {cam_index!r}：用 v4l2-ctl --list-devices 確認編號，再用 --camera 指定")
 
     def detect(self):
-        import numpy as np
-        cv2 = self.cv2
         ok, frame = self.cap.read()
         if not ok:
-            return []
+            return FRAME_UNAVAILABLE
+        import numpy as np
+        cv2 = self.cv2
         H, W = frame.shape[:2]
         img = cv2.resize(frame, (self.imgsz, self.imgsz))[:, :, ::-1].transpose(2, 0, 1)
         x = np.ascontiguousarray(img, dtype=np.float32)[None] / 255.0
@@ -413,7 +417,7 @@ def main():
         watcher.poll()
         watcher.start()
     t = time.time()
-    n, det_s, w0 = 0, 0.0, time.perf_counter()
+    attempts, processed, det_s, w0 = 0, 0, 0.0, time.perf_counter()
     try:
         while True:
             t0 = time.perf_counter()
@@ -422,17 +426,19 @@ def main():
                 break
             det_s += time.perf_counter() - t0
             t = t + a.sim_dt if a.sim_dt else time.time()
-            gate.step(dets, t)
+            if dets is FRAME_UNAVAILABLE:
+                gate.step([], t)
+            else:
+                gate.step(dets, t)
+                processed += 1
             if not a.sim_dt:
                 time.sleep(1 / a.fps)
-            n += 1
-            # 每 20 幀印一次，給 12/1 判斷點：3 FPS 門檻看「實際」＝處理完的幀數 ÷ 實際經過時間
-            # （含取像、推論、閘門邏輯、--fps 的等待）；detect 只是診斷推論本身多快
-            if n == 20 and a.backend != "mock":
+            attempts += 1
+            if attempts == 20 and a.backend != "mock":
                 now = time.perf_counter()
-                log.info("實際 %.1f FPS（最近 20 幀，含等待）；detect 平均 %.0f ms/幀",
-                         n / (now - w0), det_s / n * 1000)
-                n, det_s, w0 = 0, 0.0, now
+                log.info("實際 %.1f FPS（有效影格 %d/%d，含等待）；detect 平均 %.0f ms/次",
+                         processed / (now - w0), processed, attempts, det_s / attempts * 1000)
+                attempts, processed, det_s, w0 = 0, 0, 0.0, now
     except KeyboardInterrupt:
         pass
     finally:

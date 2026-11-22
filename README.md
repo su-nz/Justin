@@ -132,9 +132,9 @@ yolo export model=yolo11n.pt format=onnx imgsz=320          # 產生 yolo11n.onn
 pip install onnxruntime opencv-python-headless              # Pi 上
 python edge/vision-gate/gate.py --backend onnx --model yolo11n.onnx --labels coco --offline
 ```
-輸入尺寸預設讀模型本身（`--imgsz` 可覆寫）。執行時每 20 幀印一次 `實際 … FPS；detect 平均 … ms/幀`。
+輸入尺寸預設讀模型本身（`--imgsz` 可覆寫）。執行時每嘗試處理 20 次就印一次實際 FPS、有效影格數和平均偵測耗時。
 
-12/1 判斷點的 ≥3 FPS 看「實際 FPS」：最近 20 幀 ÷ 這 20 幀實際經過的時間，包含取像、推論、閘門邏輯和每幀的等待。用 Demo 要跑的參數量（預設 `--fps 5` 每幀會再等 200 ms）。後面的 `detect` 只是診斷推論本身多快，不能拿來驗收。
+12/1 判斷點的 ≥3 FPS 看「實際 FPS」。以最近 20 次嘗試中成功處理的影格數除以整段經過時間。讀不到畫面時只計耗時，有畫面但沒偵測到物件仍算有效影格。用 Demo 參數測量，時間包含取像、推論、閘門邏輯和每輪等待（預設 `--fps 5` 會等 200 ms）。`detect` 平均耗時供診斷使用。
 
 ## API
 
