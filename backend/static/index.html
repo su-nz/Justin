@@ -43,13 +43,28 @@ const LABEL={available:'有空位',near_full:'快滿了'};
 const map=L.map('map',{zoomControl:false}).setView([25.0235,121.5300],15);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
 const layer=L.layerGroup().addTo(map);
-let me=null, meMarker=null, line=null;
+let me=null, meMarker=null, line=null, target=null;  // target：目前推薦的桶
+// ?demo=1：現場 Demo 用，每 5 秒更新並把地圖移到 NTNU-01（?bin= 可換桶）；平常 60 秒
+const Q=new URLSearchParams(location.search), DEMO=Q.get('demo')==='1', FOCUS=Q.get('bin')||'NTNU-01';
+let focused=false;
 
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function clearRoute(text){  // 推薦的桶不能用了：路線、推薦資訊、導航連結一起清掉
+  if(line){line.remove();line=null}
+  target=null;
+  document.getElementById('msg').textContent=text;
+  document.getElementById('detail').innerHTML='';
+}
 
 async function loadBins(){
   const bins=await (await fetch('/api/bins')).json();
   layer.clearLayers();
+  if(target&&!bins.some(b=>b.id===target&&b.state in COLORS))
+    clearRoute('剛剛推薦的垃圾桶已滿或暫停使用，請按「重新尋找」。');
+  if(DEMO&&!focused){  // 用桶的實際座標，不寫死；已滿被隱藏時一樣對準
+    const f=bins.find(b=>b.id===FOCUS);
+    if(f){map.setView([f.lat,f.lng],17);focused=true}
+  }
   for(const b of bins){
     if(!(b.state in COLORS)) continue;  // 已滿、離線、故障的桶不顯示給市民
     L.circleMarker([b.lat,b.lng],{radius:9,weight:2,color:'#fff',fillColor:COLORS[b.state],fillOpacity:.95})
@@ -73,8 +88,8 @@ document.getElementById('go').onclick=async()=>{
   if(meMarker) meMarker.remove();
   meMarker=L.circleMarker(me,{radius:7,color:'#fff',weight:3,fillColor:'#2563eb',fillOpacity:1}).addTo(map);
   const r=await (await fetch(`/api/nearest?lat=${me[0]}&lng=${me[1]}&n=3`)).json();
-  if(!r.length){msg.textContent='附近暫時沒有可用的垃圾桶。';det.innerHTML='';return;}
-  const b=r[0];
+  if(!r.length){clearRoute('附近暫時沒有可用的垃圾桶。');return;}
+  const b=r[0]; target=b.id;
   if(line) line.remove();
   line=L.polyline([me,[b.lat,b.lng]],{dashArray:'6 8',color:'#2563eb',weight:3}).addTo(map);
   map.fitBounds(line.getBounds(),{padding:[60,60],maxZoom:17});
@@ -86,7 +101,7 @@ document.getElementById('go').onclick=async()=>{
   document.getElementById('go').textContent='重新尋找';
 };
 
-loadBins(); setInterval(loadBins,60000);
+loadBins(); setInterval(loadBins,DEMO?5000:60000);
 if('serviceWorker' in navigator) navigator.serviceWorker.register('/static/sw.js');
 </script>
 </body>

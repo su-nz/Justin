@@ -22,6 +22,7 @@
   table{width:100%;border-collapse:collapse;font-size:13px}
   td,th{padding:5px 4px;border-bottom:1px solid #eee;text-align:left}
   .pill{display:inline-block;padding:1px 7px;border-radius:9px;font-size:11px;color:#fff}
+  tr.warn td{background:#fdecea}
   label{font-size:13px;margin-right:8px}
   input{width:64px}
   button{padding:7px 12px;border:0;border-radius:8px;background:#1f6f4a;color:#fff;font-weight:600;cursor:pointer}
@@ -50,37 +51,75 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 const C={available:'#1f6f4a',near_full:'#c98a00',full:'#c0392b',offline:'#6b7280',fault:'#7c3aed'};
-const EVT={overflow:'桶滿外溢',illegal_dumping:'違規傾倒',bag_rejected:'拒收大袋',sensor_blocked:'感測器遮擋',
-  ground_waste_unknown:'地面垃圾',fire_smoke:'煙霧',tamper:'破壞'};
+const EVT={overflow:'桶滿外溢',illegal_dumping:'違規傾倒',bag_rejected:'拒收垃圾袋',sensor_blocked:'感測器遮擋',
+  ground_waste:'地面垃圾',ground_waste_unknown:'地面垃圾',fire_smoke:'煙霧',tamper:'破壞'};
+const warn=b=>(b.open_events||[]).map(t=>EVT[t]||t).join('、');  // 未處理事件 → 桶要顯示警示
 const VCOL=['#2563eb','#db2777','#ea580c','#0891b2','#65a30d'];
 let TOKEN=sessionStorage.getItem('adm')||prompt('Admin token');
 sessionStorage.setItem('adm',TOKEN);
 document.getElementById('logout').onclick=()=>{sessionStorage.removeItem('adm');location.reload()};
 const H={'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// ?demo=1：現場 Demo 用，每 5 秒更新並把地圖移到 NTNU-01（?bin= 可換桶）；平常 30 秒
+const Q=new URLSearchParams(location.search), DEMO=Q.get('demo')==='1', FOCUS=Q.get('bin')||'NTNU-01';
+let focused=false;
+const ago=t=>{if(t==null)return'-';const s=Math.max(0,Date.now()/1000-t);
+  return s<60?`${Math.round(s)} 秒前`:s<3600?`${Math.floor(s/60)} 分前`:new Date(t*1000).toLocaleString()};
 
 const map=L.map('map').setView([25.0215,121.5310],15);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
 const binLayer=L.layerGroup().addTo(map), routeLayer=L.layerGroup().addTo(map);
 
-async function loadBins(){
-  const bins=await (await fetch('/api/bins')).json();
+async function loadBins(signal){
+  const r=await fetch('/api/admin/bins',{headers:H,signal});
+  if(!r.ok) return;  // token 錯誤由 loadEvents 提示並重新登入
+  const bins=await r.json();
+  if(signal.aborted) return;
   binLayer.clearLayers();
-  document.getElementById('bins').innerHTML='<tr><th>ID</th><th>位置</th><th>狀態</th><th>%</th><th>滿前(h)</th></tr>'+
-    bins.map(b=>`<tr><td>${esc(b.id)}</td><td>${esc(b.name)}</td><td><span class="pill" style="background:${C[b.state]}">${b.state}</span></td>
-      <td>${b.fill_pct??'-'}</td><td>${b.hours_to_full??'-'}</td></tr>`).join('');
-  bins.forEach(b=>L.circleMarker([b.lat,b.lng],{radius:8,color:'#fff',weight:2,fillColor:C[b.state],fillOpacity:.95})
-    .bindTooltip(`${esc(b.id)} ${esc(b.name)} ${b.fill_pct??'-'}%`).addTo(binLayer));
+  if(DEMO&&!focused){
+    const f=bins.find(b=>b.id===FOCUS);
+    if(f){map.setView([f.lat,f.lng],17);focused=true}
+  }
+  document.getElementById('bins').innerHTML='<tr><th>ID</th><th>位置</th><th>狀態</th><th>%</th><th>滿前(h)</th><th>最後上傳</th></tr>'+
+    bins.map(b=>`<tr${warn(b)?' class="warn"':''}><td>${warn(b)?'⚠ ':''}${esc(b.id)}</td><td>${esc(b.name)}</td><td><span class="pill" style="background:${C[b.state]}">${b.state}</span></td>
+      <td>${b.fill_pct??'-'}</td><td>${b.hours_to_full??'-'}</td><td>${ago(b.last_seen)}</td></tr>`).join('');
+  bins.forEach(b=>{const w=warn(b);
+    L.circleMarker([b.lat,b.lng],{radius:w?11:8,color:w?'#c0392b':'#fff',weight:w?4:2,fillColor:C[b.state],fillOpacity:.95})
+      .bindTooltip(`${esc(b.id)} ${esc(b.name)} ${b.fill_pct??'-'}%${w?`<br>⚠ ${esc(w)}`:''}`).addTo(binLayer)});
 }
-async function loadEvents(){
-  const r=await fetch('/api/events?limit=30',{headers:H});
+async function loadEvents(signal){
+  const r=await fetch('/api/events?limit=30',{headers:H,signal});
+  if(signal.aborted) return;
   if(r.status===401){sessionStorage.removeItem('adm');alert('token 錯誤');location.reload();return}
+  if(!r.ok) return;
   const ev=await r.json();
+  if(signal.aborted) return;
   document.getElementById('events').innerHTML=ev.length?ev.map(e=>`<tr><td>${new Date(e.ts*1000).toLocaleTimeString()}</td>
     <td>${esc(e.bin_id)}</td><td>${EVT[e.type]||esc(e.type)}</td>
     <td>${e.resolved?'✓':`<button class="ghost" onclick="resolve(${e.id})">處理</button>`}</td></tr>`).join(''):'<tr><td>無</td></tr>';
 }
-async function resolve(id){await fetch(`/api/events/${id}/resolve`,{method:'POST',headers:H});loadEvents()}
+let poll=null;
+async function refresh(){
+  if(poll&&!poll.signal.aborted) return;
+  const controller=new AbortController();
+  poll=controller;
+  const timeout=setTimeout(()=>controller.abort(),15000);
+  await Promise.allSettled([loadBins(controller.signal),loadEvents(controller.signal)]);
+  clearTimeout(timeout);
+  if(poll===controller) poll=null;
+}
+
+async function resolve(id){
+  try{
+    const r=await fetch(`/api/events/${id}/resolve`,{method:'POST',headers:H});
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+  }catch{
+    alert('事件處理失敗，請再試一次。');
+    return;
+  }
+  poll?.abort();
+  refresh();
+}
 
 document.getElementById('plan').onclick=async()=>{
   const body={vehicles:+veh.value,vehicle_capacity_l:+cap.value,horizon_h:+hz.value};
@@ -103,7 +142,7 @@ document.getElementById('plan').onclick=async()=>{
       html:`<div style="background:${VCOL[rt.vehicle%5]};color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;font-size:12px;font-weight:700">${i+1}</div>`})}).addTo(routeLayer));
   });
 };
-loadBins();loadEvents();setInterval(()=>{loadBins();loadEvents()},30000);
+refresh();setInterval(refresh,DEMO?5000:30000);
 </script>
 </body>
 </html>

@@ -138,7 +138,7 @@ python3 edge/vision-gate/gate.py --backend mock --scenario edge/vision-gate/scen
 | POST | `/api/telemetry`、`/api/events` | `X-Device-Token` |
 | GET | `/api/bins`、`/api/nearest?lat=&lng=` | 公開 |
 | POST | `/api/bins`、`/api/dispatch/plan`、`/api/events/{id}/resolve` | `Authorization: Bearer <ADMIN_TOKEN>` |
-| GET | `/api/events`、`/api/dispatch/latest` | admin |
+| GET | `/api/events`、`/api/dispatch/latest`、`/api/admin/bins`（調度台用，多 `last_seen`、`open_events`） | admin |
 | POST | `/line/webhook` | LINE 簽章驗證 |
 
 ## 下一步
