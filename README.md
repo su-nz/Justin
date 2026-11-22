@@ -131,6 +131,17 @@ python3 edge/vision-gate/gate.py --backend mock --scenario edge/vision-gate/scen
 3. 匯出 IMX500：`yolo export model=best.pt format=imx`，把產出的 `network.rpk` 放到 `/opt/smartbin/models/`
 4. 驗證用 **site-held-out split**（測試集用沒訓練過的地點），避免重蹈 Paper 3 同機位切分過度樂觀的問題。
 
+**Demo L1（免訓練，#11）**：Pi 4 + USB 攝影機，直接用 COCO 預訓練的 YOLO11n。杯子、瓶子照常開閘；人（手）在投入口就不關閘；手提袋、背包、行李箱當垃圾袋拒收；其他物體不開閘，太大一樣拒收。
+```bash
+pip install ultralytics                                     # 只有匯出時需要，Pi 上不用裝
+yolo export model=yolo11n.pt format=onnx imgsz=320          # 產生 yolo11n.onnx（權重不進 repo）
+pip install onnxruntime opencv-python-headless              # Pi 上
+python edge/vision-gate/gate.py --backend onnx --model yolo11n.onnx --labels coco --offline
+```
+輸入尺寸預設讀模型本身（`--imgsz` 可覆寫）。執行時每嘗試處理 20 次就印一次實際 FPS、有效影格數和平均偵測耗時。
+
+12/1 判斷點的 ≥3 FPS 看「實際 FPS」。以最近 20 次嘗試中成功處理的影格數除以整段經過時間。讀不到畫面時只計耗時，有畫面但沒偵測到物件仍算有效影格。用 Demo 參數測量，時間包含取像、推論、閘門邏輯和每輪等待（預設 `--fps 5` 會等 200 ms）。`detect` 平均耗時供診斷使用。
+
 ## API
 
 | 方法 | 路徑 | 權限 |

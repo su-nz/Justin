@@ -89,7 +89,36 @@ def coverage(boxes, roi, grid=48) -> float:
     return hit / (grid * grid)
 
 
+# ----------------------------------------------------------------------------- COCO（#11 L1：免訓練模型）
+# Ultralytics 預訓練 YOLO11n 的 80 類，順序即模型輸出的類別編號
+COCO_NAMES = (
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+    "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
+    "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone",
+    "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
+    "hair drier", "toothbrush",
+)
+# COCO 類別 → 閘門類別。沒列到的一律 "other"：不會開閘，但體積過大一樣走「太大就拒收」
+COCO_TO_GATE = {
+    "cup": "cup", "wine glass": "cup", "bottle": "bottle",
+    "person": "hand",                                                         # 有人在投入口就不關閘
+    "handbag": "garbage_bag", "backpack": "garbage_bag", "suitcase": "garbage_bag",  # 袋狀物直接拒收
+}
+
+
+def coco_to_gate(name: str) -> str:
+    return COCO_TO_GATE.get(name, "other")
+
+
 # ----------------------------------------------------------------------------- detectors
+# 空清單代表一幀已處理但沒有辨識結果，None 代表劇本播放完畢。
+FRAME_UNAVAILABLE = object()
+
+
 class MockDetector:
     """情境檔：[{"t": 0, "dets": [["cup", 0.9, [x0,y0,x1,y1]], ...]}, ...]，每筆是一幀。"""
 
@@ -124,7 +153,7 @@ class IMX500Detector:
         md = self.cam.capture_metadata()
         out = self.imx.get_outputs(md, add_batch=True)
         if out is None:
-            return []
+            return FRAME_UNAVAILABLE
         boxes, scores, classes = out[0][0], out[1][0], out[2][0]
         if self.intr is not None and getattr(self.intr, "bbox_normalization", False):
             _, in_h = self.imx.get_input_size()
@@ -150,22 +179,25 @@ def camera_source(value: str) -> int | str:
 class OnnxDetector:
     """USB 攝影機 + YOLO11 ONNX（輸出 [1, 4+nc, N]）。"""
 
-    def __init__(self, model_path, labels, conf, cam_index=0, imgsz=640):
+    def __init__(self, model_path, labels, conf, cam_index=0, imgsz=None, remap=None):
         import cv2
         import onnxruntime as ort
-        self.cv2, self.labels, self.conf, self.imgsz = cv2, labels, conf, imgsz
+        self.cv2, self.labels, self.conf, self.remap = cv2, labels, conf, remap
         self.sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
-        self.inp = self.sess.get_inputs()[0].name
+        inp = self.sess.get_inputs()[0]
+        self.inp = inp.name
+        # 沒指定就用模型本身的輸入尺寸（例如 imgsz=320 匯出的模型），動態尺寸才退回 640
+        self.imgsz = imgsz or (inp.shape[2] if isinstance(inp.shape[2], int) else 640)
         self.cap = cv2.VideoCapture(cam_index)
         if not self.cap.isOpened():
             raise SystemExit(f"打不開攝影機 {cam_index!r}：用 v4l2-ctl --list-devices 確認編號，再用 --camera 指定")
 
     def detect(self):
-        import numpy as np
-        cv2 = self.cv2
         ok, frame = self.cap.read()
         if not ok:
-            return []
+            return FRAME_UNAVAILABLE
+        import numpy as np
+        cv2 = self.cv2
         H, W = frame.shape[:2]
         img = cv2.resize(frame, (self.imgsz, self.imgsz))[:, :, ::-1].transpose(2, 0, 1)
         x = np.ascontiguousarray(img, dtype=np.float32)[None] / 255.0
@@ -181,7 +213,8 @@ class OnnxDetector:
         out = []
         for i in (idx.flatten() if len(idx) else []):
             x0, y0, bw, bh = rects[i]
-            out.append((self.labels[int(cls[i])], float(sc[i]), (x0, y0, x0 + bw, y0 + bh)))
+            name = self.labels[int(cls[i])]
+            out.append((self.remap(name) if self.remap else name, float(sc[i]), (x0, y0, x0 + bw, y0 + bh)))
         return out
 
 
@@ -391,6 +424,9 @@ def main(argv=None):
     ap.add_argument("--close-angle", type=float, help="擋板關閉時的伺服角度（0–180，預設 0）")
     ap.add_argument("--offline", action="store_true", help="不上傳，只印事件")
     ap.add_argument("--sim-dt", type=float, default=0, help="mock 時每幀推進的模擬秒數")
+    ap.add_argument("--labels", choices=["smartbin", "coco"], default="smartbin",
+                    help="onnx 模型的類別：smartbin＝自訓 8 類；coco＝預訓練 80 類，對應到閘門類別（#11）")
+    ap.add_argument("--imgsz", type=int, help="onnx 輸入尺寸，預設讀模型本身的設定")
     a = ap.parse_args(argv)
     for name in ("open_angle", "close_angle"):
         v = getattr(a, name)
@@ -406,7 +442,10 @@ def main(argv=None):
     if a.backend == "mock":
         det = MockDetector(a.scenario)
     elif a.backend == "onnx":
-        det = OnnxDetector(a.model, cfg.labels, cfg.conf, cam_index=a.camera)
+        if a.labels == "coco":
+            det = OnnxDetector(a.model, COCO_NAMES, cfg.conf, cam_index=a.camera, imgsz=a.imgsz, remap=coco_to_gate)
+        else:
+            det = OnnxDetector(a.model, cfg.labels, cfg.conf, cam_index=a.camera, imgsz=a.imgsz)
     else:
         det = IMX500Detector(a.model, cfg.labels, cfg.conf)
 
@@ -419,15 +458,28 @@ def main(argv=None):
         watcher.poll()
         watcher.start()
     t = time.time()
+    attempts, processed, det_s, w0 = 0, 0, 0.0, time.perf_counter()
     try:
         while True:
+            t0 = time.perf_counter()
             dets = det.detect()
             if dets is None:
                 break
+            det_s += time.perf_counter() - t0
             t = t + a.sim_dt if a.sim_dt else time.time()
-            gate.step(dets, t)
+            if dets is FRAME_UNAVAILABLE:
+                gate.step([], t)
+            else:
+                gate.step(dets, t)
+                processed += 1
             if not a.sim_dt:
                 time.sleep(1 / a.fps)
+            attempts += 1
+            if attempts == 20 and a.backend != "mock":
+                now = time.perf_counter()
+                log.info("實際 %.1f FPS（有效影格 %d/%d，含等待）；detect 平均 %.0f ms/次",
+                         processed / (now - w0), processed, attempts, det_s / attempts * 1000)
+                attempts, processed, det_s, w0 = 0, 0, 0.0, now
     except KeyboardInterrupt:
         pass
     finally:
