@@ -4,4 +4,3 @@ pydantic>=2
 paho-mqtt>=2.0
 httpx>=0.27
 ortools>=9.10
-pytest>=8.0
