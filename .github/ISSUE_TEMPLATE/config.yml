@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 總覽與分工
+    url: https://github.com/su-nz/Justin/issues/1
+    about: 先看總覽 issue 的順序、介面約定與工作方式

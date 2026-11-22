@@ -1,0 +1,48 @@
+name: 工作項目
+description: 一件要完成的工作，人或 agent 都能照著做
+labels: []
+body:
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景
+      description: 為什麼要做、現在的狀態、相關的程式或文件
+    validations:
+      required: true
+  - type: textarea
+    id: todo
+    attributes:
+      label: 要做什麼
+      description: 步驟，附檔案路徑
+      placeholder: |
+        1.
+        2.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 驗收條件
+      description: 做到什麼算完成，要能實際檢查
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: related
+    attributes:
+      label: 相關
+      value: |
+        - 前置：#
+        - 後續：#
+        - 總覽：#1
+  - type: dropdown
+    id: human
+    attributes:
+      label: 需要人工嗎？
+      description: 實體操作、採購、帳號設定等 agent 做不了的，請另加「需人工」標籤
+      options:
+        - 不用，agent 可以完成
+        - 需要（接線、機構、採購、拍照、帳號）
+    validations:
+      required: true
