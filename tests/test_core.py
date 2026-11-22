@@ -2,6 +2,7 @@
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "backend"), str(ROOT / "edge" / "vision-gate")]
@@ -106,6 +107,20 @@ def test_blocked_sensor_status_keeps_latest_weight(monkeypatch):
     assert status.full_for_gate
 
 
+def test_blocked_sensor_needs_weight_and_threshold_to_lock_gate(monkeypatch):
+    samples = [(100_000, 100)]
+    monkeypatch.setenv("FULL_WEIGHT_G", "1000")
+    for weight in (None, 800):
+        status = logic.status_of(samples, True, now=100_001, weight_g=weight)
+        assert status.state == "fault"
+        assert not status.full_for_gate
+
+    monkeypatch.delenv("FULL_WEIGHT_G")
+    status = logic.status_of(samples, True, now=100_001, weight_g=1200)
+    assert status.state == "fault"
+    assert not status.full_for_gate
+
+
 def test_gate_watcher_keeps_weight_full_bin_locked_when_sensor_is_blocked(monkeypatch, tmp_path):
     import types
     import httpx
@@ -197,3 +212,187 @@ def test_every_bag_attempt_gets_feedback_but_one_upload():
     bag = [("garbage_bag", .9, (.37, .06, .63, .34))]
     g.step(bag, 0); g.step(bag, 1); g.step([], 5); g.step(bag, 30); g.step(bag, 31)
     assert len(blinks) == 2 and up.q.qsize() == 1
+
+
+def test_coco_labels_map_to_gate_classes():
+    assert len(gate.COCO_NAMES) == 80 and gate.COCO_NAMES[41] == "cup" and gate.COCO_NAMES[39] == "bottle"
+    assert [gate.coco_to_gate(n) for n in ("cup", "wine glass", "person", "handbag", "dog")] == \
+        ["cup", "cup", "hand", "garbage_bag", "other"]
+
+
+def test_unknown_coco_object_never_opens_but_big_one_is_rejected():
+    act, up, g = _gate()
+    small = [("other", .9, (.45, .1, .55, .2))]
+    g.step(small, 0); g.step(small, 1)
+    assert not act.is_open and up.q.qsize() == 0
+    big = [("other", .9, (.36, .06, .64, .34))]
+    g.step(big, 2); g.step(big, 3)
+    assert not act.is_open and up.q.qsize() == 1
+
+
+def test_mock_drives_hardware_only_with_drive_flag():
+    ns = lambda **kw: type("A", (), {"dry": False, "drive": False, "backend": "mock", **kw})()
+    assert gate.actuators_dry(ns()) is True                    # 劇本預設不碰 GPIO
+    assert gate.actuators_dry(ns(drive=True)) is False         # --drive 驅動實體元件
+    assert gate.actuators_dry(ns(drive=True, dry=True)) is True  # --dry 優先
+    assert gate.actuators_dry(ns(backend="onnx")) is False
+
+
+def _fake_gpiozero(monkeypatch, pigpio_ok):
+    import types
+    made = {}
+
+    class Dev:
+        def __init__(self, pin, **kw):
+            self.pin, self.kw, self.angle = pin, kw, None
+            made.setdefault(type(self).__name__, []).append(self)
+
+        def on(self): pass
+        def off(self): pass
+        def blink(self, **kw): pass
+        def beep(self, **kw): pass
+        def detach(self): pass
+
+    class AngularServo(Dev):
+        history = []
+        events = []
+
+        def __init__(self, pin, **kw):
+            super().__init__(pin, **kw)
+            # gpiozero 建立時就送出 initial_angle，沒指定時預設是 0°
+            initial = kw.get("initial_angle", 0)
+            if initial is not None:
+                self.history.append(initial)
+
+        def detach(self):
+            self.events.append(("detach", self.angle))
+
+        @property
+        def angle(self):
+            return self.history[-1] if self.history else None
+
+        @angle.setter
+        def angle(self, v):
+            if v is not None:
+                self.history.append(v)
+    class LED(Dev): pass
+    class Buzzer(Dev): pass
+
+    class PiGPIOFactory:
+        def __init__(self):
+            if not pigpio_ok:
+                raise OSError("failed to connect to localhost:8888")
+
+    gz = types.ModuleType("gpiozero")
+    gz.AngularServo, gz.LED, gz.Buzzer = AngularServo, LED, Buzzer
+    pins = types.ModuleType("gpiozero.pins")
+    pig = types.ModuleType("gpiozero.pins.pigpio")
+    pig.PiGPIOFactory = PiGPIOFactory
+    monkeypatch.setitem(sys.modules, "gpiozero", gz)
+    monkeypatch.setitem(sys.modules, "gpiozero.pins", pins)
+    monkeypatch.setitem(sys.modules, "gpiozero.pins.pigpio", pig)
+    return made, PiGPIOFactory
+
+
+def test_actuators_servo_uses_pigpio_and_configured_angles(monkeypatch):
+    made, factory = _fake_gpiozero(monkeypatch, pigpio_ok=True)
+    cfg = gate.Cfg()
+    cfg.servo_open_angle, cfg.servo_close_angle = 100, 10
+    act = gate.Actuators(cfg, dry=False)
+    servo = made["AngularServo"][0]
+    assert servo.pin == 18
+    assert servo.kw["min_pulse_width"] == 0.0005 and servo.kw["max_pulse_width"] == 0.0025
+    assert (servo.kw["min_angle"], servo.kw["max_angle"]) == (0, 180)
+    assert isinstance(servo.kw["pin_factory"], factory)
+    assert servo.history[0] == 10  # 第一個 PWM 就是校正後的關門角度，不會先跑到 0°
+    act.open()
+    assert servo.angle == 100
+    act.close()
+    assert servo.angle == 10
+
+
+def test_actuators_fall_back_without_pigpiod(monkeypatch):
+    made, _ = _fake_gpiozero(monkeypatch, pigpio_ok=False)
+    gate.Actuators(gate.Cfg(), dry=False)
+    assert made["AngularServo"][0].kw["pin_factory"] is None  # pigpiod 沒開也能跑，只是會抖
+
+
+def test_mock_drive_runs_demo_scenario(monkeypatch):
+    made, _ = _fake_gpiozero(monkeypatch, pigpio_ok=True)
+    monkeypatch.setattr(gate.time, "sleep", lambda s: None)
+    scenario = str(ROOT / "edge" / "vision-gate" / "scenarios" / "demo.json")
+    gate.main(["--backend", "mock", "--scenario", scenario, "--offline", "--sim-dt", "30",
+               "--drive", "--open-angle", "80"])
+    servo = made["AngularServo"][0]
+    assert made["LED"] and made["Buzzer"]
+    assert 80 in servo.history          # 劇本裡的杯子讓實體擋板打開到 --open-angle
+    assert servo.history[-1] == 0       # 結束時關閘
+
+
+def test_admin_bins_needs_token_and_keeps_public_api_small(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import db, main
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "t.db"))
+    adm = {"Authorization": f"Bearer {main.ADMIN_TOKEN}"}
+    with TestClient(main.app) as cl:
+        tok = cl.post("/api/bins", headers=adm, json={"id": "NTNU-01", "name": "x", "lat": 25.0, "lng": 121.5}).json()["device_token"]
+        cl.post("/api/telemetry", headers={"X-Device-Token": tok}, json={"bin_id": "NTNU-01", "fill_pct": 40})
+        assert cl.get("/api/admin/bins").status_code == 401
+        full = cl.get("/api/admin/bins", headers=adm).json()[0]
+        assert full["last_seen"] and full["open_events"] == []
+        pub = cl.get("/api/bins").json()[0]
+        assert "last_seen" not in pub and "open_events" not in pub
+
+
+def test_camera_source_index_or_path():
+    assert gate.camera_source("0") == 0
+    assert gate.camera_source(" 2 ") == 2
+    assert gate.camera_source("/dev/video2") == "/dev/video2"
+
+
+def test_effective_fps_counts_only_processed_frames(monkeypatch, caplog):
+    elapsed = 0.0
+
+    def advance(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+
+    monkeypatch.setattr(gate, "time", SimpleNamespace(
+        time=lambda: elapsed, perf_counter=lambda: elapsed, sleep=advance,
+    ))
+    monkeypatch.setattr(gate.Uploader, "start", lambda self: None)
+    detector = gate.OnnxDetector.__new__(gate.OnnxDetector)
+    detector.cap = SimpleNamespace(read=lambda: (False, None))
+    failed_frame = detector.detect
+
+    def processed_frame():
+        advance(0.2)
+        return []
+
+    # One window with no frames, one with a mix, and one with valid empty detections.
+    frames = iter([failed_frame] * 30 + [processed_frame] * 30)
+
+    def detect():
+        frame = next(frames, None)
+        return frame() if frame is not None else None
+
+    monkeypatch.setattr(gate, "OnnxDetector", lambda *args, **kwargs: SimpleNamespace(detect=detect))
+    monkeypatch.setattr(sys, "argv", ["gate.py", "--backend", "onnx", "--offline", "--dry"])
+    with caplog.at_level("INFO", logger="gate"):
+        gate.main()
+
+    assert "實際 0.0 FPS（有效影格 0/20" in caplog.text
+    assert "實際 1.7 FPS（有效影格 10/20" in caplog.text
+    assert "實際 2.5 FPS（有效影格 20/20" in caplog.text
+
+
+def test_shutdown_holds_close_signal_before_detach(monkeypatch):
+    made, _ = _fake_gpiozero(monkeypatch, pigpio_ok=True)
+    cfg = gate.Cfg()
+    act = gate.Actuators(cfg, dry=False)
+    servo = made["AngularServo"][0]
+    monkeypatch.setattr(gate.time, "sleep", lambda s: servo.events.append(("sleep", s)))
+    act.open()
+    act.shutdown()   # 擋板開著時結束
+    assert servo.events == [("sleep", cfg.servo_settle_s), ("detach", cfg.servo_close_angle)]
+    assert cfg.servo_settle_s >= 0.3

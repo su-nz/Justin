@@ -142,27 +142,31 @@ def _record_event(bin_id, ts, etype, conf, detail, dedupe_s=0):
 # ---------------------------------------------------------------- status
 def _bin_status(bin_id: str, now: float | None = None) -> logic.BinStatus | None:
     now = now or time.time()
+    cutoff = now - 24 * 3600
     with db.conn() as c:
-        rows = c.execute("SELECT ts, fill_pct, weight_g, blocked FROM telemetry WHERE bin_id=? AND ts>? ORDER BY ts",
-                         (bin_id, now - 24 * 3600)).fetchall()
+        # Retain the latest weight for display even if all readings are offline.
+        rows = c.execute(
+            "SELECT ts, fill_pct, weight_g, blocked FROM telemetry WHERE bin_id=? "
+            "AND ts>=min(?, (SELECT max(ts) FROM telemetry WHERE bin_id=?)) ORDER BY ts, id",
+            (bin_id, cutoff, bin_id),
+        ).fetchall()
     if not rows:
         return logic.status_of([], False, now=now)
-    samples = [(r["ts"], r["fill_pct"]) for r in rows]
+    latest = rows[-1]
+    samples = [(r["ts"], r["fill_pct"]) for r in rows if r["ts"] > cutoff]
     # Use the latest report as a unit: a missing weight means the scale timed
     # out, so an older heavy reading must not keep the bin classified as full.
-    weight_g = rows[-1]["weight_g"]
+    weight_g = latest["weight_g"]
     prev = None  # 依時間跑一遍狀態機，讓遲滯生效
     for _, f in samples[-12:-1]:
         prev = logic.classify(f, prev)
-    return logic.status_of(samples, bool(rows[-1]["blocked"]), prev, now, weight_g)
+    return logic.status_of(samples, bool(latest["blocked"]), prev, now, weight_g)
 
 
 def _all_bins() -> list[dict]:
     with db.conn() as c:
         bins = [dict(r) for r in c.execute(
-            "SELECT b.id,b.name,b.lat,b.lng,b.capacity_l,b.depth_mm,b.has_gate,"
-            "(SELECT t.weight_g FROM telemetry t WHERE t.bin_id=b.id "
-            "ORDER BY t.ts DESC LIMIT 1) AS weight_g FROM bins b ORDER BY b.id")]
+            "SELECT id,name,lat,lng,capacity_l,depth_mm,has_gate FROM bins ORDER BY id")]
         evs = c.execute("SELECT bin_id, type FROM events WHERE resolved=0 AND ts>?",
                         (time.time() - 24 * 3600,)).fetchall()
     open_ev: dict[str, list[str]] = {}
@@ -173,7 +177,7 @@ def _all_bins() -> list[dict]:
         st = _bin_status(b["id"])
         b.update(state=st.state, fill_pct=st.fill_pct, rate_pct_per_h=st.rate_pct_per_h,
                  hours_to_full=st.hours_to_full, last_seen=st.last_seen,
-                 full_for_gate=st.full_for_gate,
+                 weight_g=st.weight_g, full_for_gate=st.full_for_gate,
                  open_events=open_ev.get(b["id"], []), has_gate=bool(b["has_gate"]))
     return bins
 
@@ -242,6 +246,12 @@ PUBLIC_FIELDS = ("id", "name", "lat", "lng", "state", "fill_pct", "weight_g", "h
 @app.get("/api/bins")
 def list_bins():
     return [{k: b[k] for k in PUBLIC_FIELDS} for b in _all_bins()]
+
+
+@app.get("/api/admin/bins", dependencies=[Depends(require_admin)])
+def list_bins_admin():
+    """調度台用：多了 last_seen、open_events 等不給市民看的欄位。"""
+    return _all_bins()
 
 
 def nearest_available(lat: float, lng: float, n: int = 3) -> list[dict]:

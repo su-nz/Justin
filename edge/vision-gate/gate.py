@@ -50,6 +50,12 @@ class Cfg:
     reject_cooldown_s: float = 60.0
     ground_cooldown_s: float = 900.0
     servo_pin: int = 18
+    # SG90：0.5–2.5 ms 對應 0–180°。開／關角度以擋板實際到位為準，可用 --open-angle / --close-angle 調
+    servo_min_pulse: float = 0.0005
+    servo_max_pulse: float = 0.0025
+    servo_open_angle: float = 90.0
+    servo_close_angle: float = 0.0
+    servo_settle_s: float = 0.6     # SG90 轉 90° 約 0.3 s；結束時保留關門訊號這麼久再放掉
     led_green: int = 23
     led_red: int = 24
     buzzer_pin: int = 25
@@ -83,7 +89,36 @@ def coverage(boxes, roi, grid=48) -> float:
     return hit / (grid * grid)
 
 
+# ----------------------------------------------------------------------------- COCO（#11 L1：免訓練模型）
+# Ultralytics 預訓練 YOLO11n 的 80 類，順序即模型輸出的類別編號
+COCO_NAMES = (
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+    "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
+    "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone",
+    "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
+    "hair drier", "toothbrush",
+)
+# COCO 類別 → 閘門類別。沒列到的一律 "other"：不會開閘，但體積過大一樣走「太大就拒收」
+COCO_TO_GATE = {
+    "cup": "cup", "wine glass": "cup", "bottle": "bottle",
+    "person": "hand",                                                         # 有人在投入口就不關閘
+    "handbag": "garbage_bag", "backpack": "garbage_bag", "suitcase": "garbage_bag",  # 袋狀物直接拒收
+}
+
+
+def coco_to_gate(name: str) -> str:
+    return COCO_TO_GATE.get(name, "other")
+
+
 # ----------------------------------------------------------------------------- detectors
+# 空清單代表一幀已處理但沒有辨識結果，None 代表劇本播放完畢。
+FRAME_UNAVAILABLE = object()
+
+
 class MockDetector:
     """情境檔：[{"t": 0, "dets": [["cup", 0.9, [x0,y0,x1,y1]], ...]}, ...]，每筆是一幀。"""
 
@@ -118,7 +153,7 @@ class IMX500Detector:
         md = self.cam.capture_metadata()
         out = self.imx.get_outputs(md, add_batch=True)
         if out is None:
-            return []
+            return FRAME_UNAVAILABLE
         boxes, scores, classes = out[0][0], out[1][0], out[2][0]
         if self.intr is not None and getattr(self.intr, "bbox_normalization", False):
             _, in_h = self.imx.get_input_size()
@@ -135,23 +170,34 @@ class IMX500Detector:
         return dets
 
 
+def camera_source(value: str) -> int | str:
+    """--camera：純數字當裝置編號（2 → /dev/video2），其他照原樣交給 OpenCV（裝置路徑、影片檔）。"""
+    value = value.strip()
+    return int(value) if value.isdigit() else value
+
+
 class OnnxDetector:
     """USB 攝影機 + YOLO11 ONNX（輸出 [1, 4+nc, N]）。"""
 
-    def __init__(self, model_path, labels, conf, cam_index=0, imgsz=640):
+    def __init__(self, model_path, labels, conf, cam_index=0, imgsz=None, remap=None):
         import cv2
         import onnxruntime as ort
-        self.cv2, self.labels, self.conf, self.imgsz = cv2, labels, conf, imgsz
+        self.cv2, self.labels, self.conf, self.remap = cv2, labels, conf, remap
         self.sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
-        self.inp = self.sess.get_inputs()[0].name
+        inp = self.sess.get_inputs()[0]
+        self.inp = inp.name
+        # 沒指定就用模型本身的輸入尺寸（例如 imgsz=320 匯出的模型），動態尺寸才退回 640
+        self.imgsz = imgsz or (inp.shape[2] if isinstance(inp.shape[2], int) else 640)
         self.cap = cv2.VideoCapture(cam_index)
+        if not self.cap.isOpened():
+            raise SystemExit(f"打不開攝影機 {cam_index!r}：用 v4l2-ctl --list-devices 確認編號，再用 --camera 指定")
 
     def detect(self):
-        import numpy as np
-        cv2 = self.cv2
         ok, frame = self.cap.read()
         if not ok:
-            return []
+            return FRAME_UNAVAILABLE
+        import numpy as np
+        cv2 = self.cv2
         H, W = frame.shape[:2]
         img = cv2.resize(frame, (self.imgsz, self.imgsz))[:, :, ::-1].transpose(2, 0, 1)
         x = np.ascontiguousarray(img, dtype=np.float32)[None] / 255.0
@@ -167,19 +213,37 @@ class OnnxDetector:
         out = []
         for i in (idx.flatten() if len(idx) else []):
             x0, y0, bw, bh = rects[i]
-            out.append((self.labels[int(cls[i])], float(sc[i]), (x0, y0, x0 + bw, y0 + bh)))
+            name = self.labels[int(cls[i])]
+            out.append((self.remap(name) if self.remap else name, float(sc[i]), (x0, y0, x0 + bw, y0 + bh)))
         return out
 
 
 # ----------------------------------------------------------------------------- actuators
+def servo_pin_factory():
+    """伺服用 pigpio 的硬體計時 PWM，比 gpiozero 預設的軟體 PWM 穩，不會抖。
+
+    要先 sudo systemctl enable --now pigpiod；沒開就退回預設，並提醒一次。
+    """
+    try:
+        from gpiozero.pins.pigpio import PiGPIOFactory
+        return PiGPIOFactory()
+    except Exception as e:  # 沒裝 pigpio、pigpiod 沒啟動
+        log.warning("伺服改用軟體 PWM，可能會抖（%s）；請執行 sudo systemctl enable --now pigpiod", e)
+        return None
+
+
 class Actuators:
     def __init__(self, cfg: Cfg, dry: bool):
         self.dry = dry
+        self.cfg = cfg
         if not dry:
             from gpiozero import LED, AngularServo, Buzzer
-            # SG90 / MG90S：0.5–2.5 ms 對應 0–180°，所以 90° 是 1.5 ms
-            self.servo = AngularServo(cfg.servo_pin, min_angle=0, max_angle=90,
-                                      min_pulse_width=0.0005, max_pulse_width=0.0015)
+            self.servo = AngularServo(cfg.servo_pin, min_angle=0, max_angle=180,
+                                      min_pulse_width=cfg.servo_min_pulse,
+                                      max_pulse_width=cfg.servo_max_pulse,
+                                      # 第一個 PWM 就是校正後的關門角度，不要先送預設的 0°
+                                      initial_angle=cfg.servo_close_angle,
+                                      pin_factory=servo_pin_factory())
             self.g, self.r = LED(cfg.led_green), LED(cfg.led_red)
             self.buzzer = Buzzer(cfg.buzzer_pin)
         self.is_open = False
@@ -189,7 +253,7 @@ class Actuators:
         self.is_open = True
         log.info("GATE OPEN")
         if not self.dry:
-            self.servo.angle = 90
+            self.servo.angle = self.cfg.servo_open_angle
             self.g.on()
             self.r.off()
 
@@ -197,7 +261,7 @@ class Actuators:
         self.is_open = False
         log.info("GATE CLOSE")
         if not self.dry:
-            self.servo.angle = 0
+            self.servo.angle = self.cfg.servo_close_angle
             self.g.off()
 
     def reject(self):
@@ -209,6 +273,7 @@ class Actuators:
     def shutdown(self):
         self.close()
         if not self.dry:
+            time.sleep(self.cfg.servo_settle_s)  # 保留關門訊號，讓擋板關到位再放掉
             self.servo.detach()
 
 
@@ -339,27 +404,52 @@ class Gate:
                 self.last_ground = now
 
 
-def main():
+def actuators_dry(a) -> bool:
+    """--dry 一律不碰 GPIO；mock 劇本預設也不碰，加 --drive 才驅動實體元件。"""
+    return a.dry or (a.backend == "mock" and not a.drive)
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--backend", choices=["imx500", "onnx", "mock"], default="imx500")
     ap.add_argument("--model", default="/opt/smartbin/models/network.rpk")
     ap.add_argument("--scenario", help="mock 情境檔")
+    ap.add_argument("--camera", type=camera_source, default=camera_source(os.environ.get("GATE_CAMERA", "0")),
+                    help="onnx 用的攝影機：編號（0 → /dev/video0）或裝置路徑；預設讀環境變數 GATE_CAMERA，沒有就是 0")
     ap.add_argument("--fps", type=float, default=5)
     ap.add_argument("--dry", action="store_true", help="不驅動 GPIO")
+    ap.add_argument("--drive", action="store_true",
+                    help="mock 劇本也驅動實體伺服、LED、蜂鳴器（#6 劇本模式；建議搭配 --fps 1）")
+    ap.add_argument("--open-angle", type=float, help="擋板打開時的伺服角度（0–180，預設 90）")
+    ap.add_argument("--close-angle", type=float, help="擋板關閉時的伺服角度（0–180，預設 0）")
     ap.add_argument("--offline", action="store_true", help="不上傳，只印事件")
     ap.add_argument("--sim-dt", type=float, default=0, help="mock 時每幀推進的模擬秒數")
-    a = ap.parse_args()
+    ap.add_argument("--labels", choices=["smartbin", "coco"], default="smartbin",
+                    help="onnx 模型的類別：smartbin＝自訓 8 類；coco＝預訓練 80 類，對應到閘門類別（#11）")
+    ap.add_argument("--imgsz", type=int, help="onnx 輸入尺寸，預設讀模型本身的設定")
+    a = ap.parse_args(argv)
+    for name in ("open_angle", "close_angle"):
+        v = getattr(a, name)
+        if v is not None and not 0 <= v <= 180:
+            ap.error(f"--{name.replace('_', '-')} 要在 0–180 之間")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
     cfg = Cfg()
+    if a.open_angle is not None:
+        cfg.servo_open_angle = a.open_angle
+    if a.close_angle is not None:
+        cfg.servo_close_angle = a.close_angle
     if a.backend == "mock":
         det = MockDetector(a.scenario)
     elif a.backend == "onnx":
-        det = OnnxDetector(a.model, cfg.labels, cfg.conf)
+        if a.labels == "coco":
+            det = OnnxDetector(a.model, COCO_NAMES, cfg.conf, cam_index=a.camera, imgsz=a.imgsz, remap=coco_to_gate)
+        else:
+            det = OnnxDetector(a.model, cfg.labels, cfg.conf, cam_index=a.camera, imgsz=a.imgsz)
     else:
         det = IMX500Detector(a.model, cfg.labels, cfg.conf)
 
-    act = Actuators(cfg, dry=a.dry or a.backend == "mock")
+    act = Actuators(cfg, dry=actuators_dry(a))
     up = Uploader(cfg, offline=a.offline)
     up.start()
     gate = Gate(cfg, act, up)
@@ -368,15 +458,28 @@ def main():
         watcher.poll()
         watcher.start()
     t = time.time()
+    attempts, processed, det_s, w0 = 0, 0, 0.0, time.perf_counter()
     try:
         while True:
+            t0 = time.perf_counter()
             dets = det.detect()
             if dets is None:
                 break
+            det_s += time.perf_counter() - t0
             t = t + a.sim_dt if a.sim_dt else time.time()
-            gate.step(dets, t)
+            if dets is FRAME_UNAVAILABLE:
+                gate.step([], t)
+            else:
+                gate.step(dets, t)
+                processed += 1
             if not a.sim_dt:
                 time.sleep(1 / a.fps)
+            attempts += 1
+            if attempts == 20 and a.backend != "mock":
+                now = time.perf_counter()
+                log.info("實際 %.1f FPS（有效影格 %d/%d，含等待）；detect 平均 %.0f ms/次",
+                         processed / (now - w0), processed, attempts, det_s / attempts * 1000)
+                attempts, processed, det_s, w0 = 0, 0, 0.0, now
     except KeyboardInterrupt:
         pass
     finally:

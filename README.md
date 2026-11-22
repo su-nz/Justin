@@ -86,6 +86,27 @@ PlatformIO 專案，板子 `seeed_xiao_esp32c3`。先改 `include/config.h`（Wi
 
 > 韌體已用 PlatformIO 編譯通過（Flash 用量約 90%），但尚未在實體 XIAO ESP32C3 上執行過。
 
+## Demo 感測節點（edge/pi-demo）
+
+Demo 用 Pi 4 取代 ESP32：`node_pi.py` 用超音波量 `fill_pct`、HX711 量 `weight_g`，每 30 秒 `POST /api/telemetry`，LCD 顯示滿度和重量。
+
+| 實體腳位（BCM） | 接到 |
+|---|---|
+| 29（GPIO5）/ 31（GPIO6） | HC-SR04 Trig / Echo（Echo 經分壓） |
+| 15（GPIO22）/ 13（GPIO27） | HX711 DT / SCK |
+| 17（3.3 V）/ 14（GND） | HX711 VCC / GND（**VCC 接 3.3 V，不能接 5 V**） |
+| 3 / 5（I²C） | LCD1602 PCF8574（0x27） |
+
+```bash
+sudo apt install -y python3-lgpio i2c-tools
+pip install --break-system-packages -r edge/pi-demo/requirements.txt
+python3 edge/pi-demo/node_pi.py --tare                         # 空桶 → export HX711_OFFSET=...
+HX711_OFFSET=... python3 edge/pi-demo/node_pi.py --calibrate 600   # 放 600 g → export HX711_SCALE=...
+export SMARTBIN_API=http://<server>:8000 BIN_ID=NTNU-01 DEVICE_TOKEN=<token> HX711_OFFSET=... HX711_SCALE=...
+python3 edge/pi-demo/node_pi.py --depth-cm 30
+```
+筆電測試用 `--dry`（假距離、假重量，不碰 GPIO）；沒接秤用 `--no-scale`。HX711 讀不到時該輪不送 `weight_g`，其他照常上傳。
+
 ## 視覺閘門（edge/vision-gate）
 
 攝影機架在桶上方往下看，一個畫面切兩個 ROI：投入口（拒收大袋 / 小垃圾才開閘、有手不關閘）與地面（覆蓋率連續兩次 ≥5% → `ground_waste`）。只上傳事件，不上傳影像。
@@ -96,11 +117,31 @@ sudo cp smartbin-gate.service /etc/systemd/system/ && sudo systemctl enable --no
 ```
 GPIO：伺服 18、綠燈 23、紅燈 24、蜂鳴器 25（`Cfg` 可改）。閘門每 60 秒向後端查桶子狀態，桶滿時小垃圾也不開閘；查不到就沿用上次結果。
 
+**劇本模式（#6）**：視覺還沒好之前，用 mock 劇本驅動實體擋板。伺服走 pigpio 的硬體計時 PWM，比較不會抖。
+```bash
+sudo apt install -y pigpio python3-pigpio && sudo systemctl enable --now pigpiod
+python3 edge/vision-gate/gate.py --backend mock --scenario edge/vision-gate/scenarios/demo.json --drive --fps 1 --offline
+```
+擋板沒開或關到位時，用 `--open-angle`／`--close-angle`（0–180°，預設 90／0；0.5–2.5 ms 對應 0–180°）對齊實物。
+
+沒有 AI Camera 時可以用 USB 視訊鏡頭跑 `--backend onnx`（Pi 4 CPU 推論）。鏡頭不是 `/dev/video0` 時，先用 `v4l2-ctl --list-devices` 找編號，再用 `--camera 2` 或 `--camera /dev/video2` 指定（也可設環境變數 `GATE_CAMERA`）。
+
 **模型**：預設類別 `cup, bottle, can, paper, lunchbox, garbage_bag, hand, litter`。
 1. 資料：TACO 公開資料集 + 自己在師大周邊拍的垃圾袋 / 飲料杯（含夜間）
 2. 訓練：`yolo detect train model=yolo11n.pt data=smartbin.yaml imgsz=640`
 3. 匯出 IMX500：`yolo export model=best.pt format=imx`，把產出的 `network.rpk` 放到 `/opt/smartbin/models/`
 4. 驗證用 **site-held-out split**（測試集用沒訓練過的地點），避免重蹈 Paper 3 同機位切分過度樂觀的問題。
+
+**Demo L1（免訓練，#11）**：Pi 4 + USB 攝影機，直接用 COCO 預訓練的 YOLO11n。杯子、瓶子照常開閘；人（手）在投入口就不關閘；手提袋、背包、行李箱當垃圾袋拒收；其他物體不開閘，太大一樣拒收。
+```bash
+pip install ultralytics                                     # 只有匯出時需要，Pi 上不用裝
+yolo export model=yolo11n.pt format=onnx imgsz=320          # 產生 yolo11n.onnx（權重不進 repo）
+pip install onnxruntime opencv-python-headless              # Pi 上
+python edge/vision-gate/gate.py --backend onnx --model yolo11n.onnx --labels coco --offline
+```
+輸入尺寸預設讀模型本身（`--imgsz` 可覆寫）。執行時每嘗試處理 20 次就印一次實際 FPS、有效影格數和平均偵測耗時。
+
+12/1 判斷點的 ≥3 FPS 看「實際 FPS」。以最近 20 次嘗試中成功處理的影格數除以整段經過時間。讀不到畫面時只計耗時，有畫面但沒偵測到物件仍算有效影格。用 Demo 參數測量，時間包含取像、推論、閘門邏輯和每輪等待（預設 `--fps 5` 會等 200 ms）。`detect` 平均耗時供診斷使用。
 
 ## API
 
@@ -109,7 +150,7 @@ GPIO：伺服 18、綠燈 23、紅燈 24、蜂鳴器 25（`Cfg` 可改）。閘�
 | POST | `/api/telemetry`、`/api/events` | `X-Device-Token` |
 | GET | `/api/bins`、`/api/nearest?lat=&lng=` | 公開 |
 | POST | `/api/bins`、`/api/dispatch/plan`、`/api/events/{id}/resolve` | `Authorization: Bearer <ADMIN_TOKEN>` |
-| GET | `/api/events`、`/api/dispatch/latest` | admin |
+| GET | `/api/events`、`/api/dispatch/latest`、`/api/admin/bins`（調度台用，多 `last_seen`、`open_events`） | admin |
 | POST | `/line/webhook` | LINE 簽章驗證 |
 
 ## 下一步
