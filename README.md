@@ -85,6 +85,27 @@ PlatformIO 專案，板子 `seeed_xiao_esp32c3`。先改 `include/config.h`（Wi
 
 > 韌體已用 PlatformIO 編譯通過（Flash 用量約 90%），但尚未在實體 XIAO ESP32C3 上執行過。
 
+## Demo 感測節點（edge/pi-demo）
+
+Demo 用 Pi 4 取代 ESP32：`node_pi.py` 用超音波量 `fill_pct`、HX711 量 `weight_g`，每 30 秒 `POST /api/telemetry`，LCD 顯示滿度和重量。
+
+| 實體腳位（BCM） | 接到 |
+|---|---|
+| 29（GPIO5）/ 31（GPIO6） | HC-SR04 Trig / Echo（Echo 經分壓） |
+| 15（GPIO22）/ 13（GPIO27） | HX711 DT / SCK |
+| 17（3.3 V）/ 14（GND） | HX711 VCC / GND（**VCC 接 3.3 V，不能接 5 V**） |
+| 3 / 5（I²C） | LCD1602 PCF8574（0x27） |
+
+```bash
+sudo apt install -y python3-gpiozero python3-lgpio i2c-tools
+pip install --break-system-packages -r edge/pi-demo/requirements.txt
+python3 edge/pi-demo/node_pi.py --tare                         # 空桶 → export HX711_OFFSET=...
+HX711_OFFSET=... python3 edge/pi-demo/node_pi.py --calibrate 600   # 放 600 g → export HX711_SCALE=...
+export SMARTBIN_API=http://<server>:8000 BIN_ID=NTNU-01 DEVICE_TOKEN=<token> HX711_OFFSET=... HX711_SCALE=...
+python3 edge/pi-demo/node_pi.py --depth-cm 30
+```
+筆電測試用 `--dry`（假距離、假重量，不碰 GPIO）；沒接秤用 `--no-scale`。HX711 讀不到時該輪不送 `weight_g`，其他照常上傳。
+
 ## 視覺閘門（edge/vision-gate）
 
 攝影機架在桶上方往下看，一個畫面切兩個 ROI：投入口（拒收大袋 / 小垃圾才開閘、有手不關閘）與地面（覆蓋率連續兩次 ≥5% → `ground_waste`）。只上傳事件，不上傳影像。
