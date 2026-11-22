@@ -237,6 +237,12 @@ def list_bins():
     return [{k: b[k] for k in PUBLIC_FIELDS} for b in _all_bins()]
 
 
+@app.get("/api/admin/bins", dependencies=[Depends(require_admin)])
+def list_bins_admin():
+    """調度台用：多了 last_seen、open_events 等不給市民看的欄位。"""
+    return _all_bins()
+
+
 def nearest_available(lat: float, lng: float, n: int = 3) -> list[dict]:
     cands = [b for b in _all_bins() if b["state"] in ("available", "near_full")]
     for b in cands:

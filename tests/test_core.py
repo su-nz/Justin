@@ -113,6 +113,21 @@ def test_every_bag_attempt_gets_feedback_but_one_upload():
     assert len(blinks) == 2 and up.q.qsize() == 1
 
 
+def test_admin_bins_needs_token_and_keeps_public_api_small(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import db, main
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "t.db"))
+    adm = {"Authorization": f"Bearer {main.ADMIN_TOKEN}"}
+    with TestClient(main.app) as cl:
+        tok = cl.post("/api/bins", headers=adm, json={"id": "NTNU-01", "name": "x", "lat": 25.0, "lng": 121.5}).json()["device_token"]
+        cl.post("/api/telemetry", headers={"X-Device-Token": tok}, json={"bin_id": "NTNU-01", "fill_pct": 40})
+        assert cl.get("/api/admin/bins").status_code == 401
+        full = cl.get("/api/admin/bins", headers=adm).json()[0]
+        assert full["last_seen"] and full["open_events"] == []
+        pub = cl.get("/api/bins").json()[0]
+        assert "last_seen" not in pub and "open_events" not in pub
+
+
 def test_camera_source_index_or_path():
     assert gate.camera_source("0") == 0
     assert gate.camera_source(" 2 ") == 2
