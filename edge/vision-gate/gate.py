@@ -403,22 +403,26 @@ def main():
         watcher.poll()
         watcher.start()
     t = time.time()
-    n_det, det_s = 0, 0.0
+    n, det_s, w0 = 0, 0.0, time.perf_counter()
     try:
         while True:
             t0 = time.perf_counter()
             dets = det.detect()
             if dets is None:
                 break
-            if a.backend != "mock":  # 每 20 幀印一次偵測速度，給 12/1 判斷點量 FPS（不含 --fps 的等待）
-                n_det, det_s = n_det + 1, det_s + time.perf_counter() - t0
-                if n_det == 20:
-                    log.info("detect %.0f ms/幀 → 最高約 %.1f FPS", det_s / n_det * 1000, n_det / det_s)
-                    n_det, det_s = 0, 0.0
+            det_s += time.perf_counter() - t0
             t = t + a.sim_dt if a.sim_dt else time.time()
             gate.step(dets, t)
             if not a.sim_dt:
                 time.sleep(1 / a.fps)
+            n += 1
+            # 每 20 幀印一次，給 12/1 判斷點：3 FPS 門檻看「實際」＝處理完的幀數 ÷ 實際經過時間
+            # （含取像、推論、閘門邏輯、--fps 的等待）；detect 只是診斷推論本身多快
+            if n == 20 and a.backend != "mock":
+                now = time.perf_counter()
+                log.info("實際 %.1f FPS（最近 20 幀，含等待）；detect 平均 %.0f ms/幀",
+                         n / (now - w0), det_s / n * 1000)
+                n, det_s, w0 = 0, 0.0, now
     except KeyboardInterrupt:
         pass
     finally:
