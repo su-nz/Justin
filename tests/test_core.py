@@ -1,12 +1,13 @@
 """核心邏輯單元測試：python -m pytest tests -q（在 smartbin/ 下執行）"""
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "backend"), str(ROOT / "edge" / "vision-gate")]
 
-from app import logic, routing  # noqa: E402
+from app import db, logic, main, routing  # noqa: E402
 import gate  # noqa: E402
 
 
@@ -77,6 +78,105 @@ def test_offline_threshold_matches_deck():
     now = 100_000
     assert logic.status_of([(now - 64 * 60, 10)], False, now=now).state == "available"
     assert logic.status_of([(now - 66 * 60, 10)], False, now=now).state == "offline"
+
+
+def test_large_light_bin_still_uses_fill_level(monkeypatch):
+    monkeypatch.setenv("FULL_WEIGHT_G", "1000")
+    status = logic.status_of([(100_000, 95)], False, now=100_001, weight_g=200)
+    assert status.state == "full"
+    assert status.weight_g == 200
+
+
+def test_small_heavy_bin_is_full_when_weight_threshold_is_enabled(monkeypatch):
+    monkeypatch.setenv("FULL_WEIGHT_G", "1000")
+    status = logic.status_of([(100_000, 20)], False, now=100_001, weight_g=1200)
+    assert status.state == "full"
+
+
+def test_weight_threshold_is_disabled_when_unset(monkeypatch):
+    monkeypatch.delenv("FULL_WEIGHT_G", raising=False)
+    status = logic.status_of([(100_000, 20)], False, now=100_001, weight_g=1200)
+    assert status.state == "available"
+
+
+def test_blocked_sensor_status_keeps_latest_weight(monkeypatch):
+    monkeypatch.setenv("FULL_WEIGHT_G", "1000")
+    status = logic.status_of([(100_000, 20)], True, now=100_001, weight_g=1200)
+    assert status.state == "fault"
+    assert status.weight_g == 1200
+    assert status.full_for_gate
+
+
+def test_blocked_sensor_needs_weight_and_threshold_to_lock_gate(monkeypatch):
+    samples = [(100_000, 100)]
+    monkeypatch.setenv("FULL_WEIGHT_G", "1000")
+    for weight in (None, 800):
+        status = logic.status_of(samples, True, now=100_001, weight_g=weight)
+        assert status.state == "fault"
+        assert not status.full_for_gate
+
+    monkeypatch.delenv("FULL_WEIGHT_G")
+    status = logic.status_of(samples, True, now=100_001, weight_g=1200)
+    assert status.state == "fault"
+    assert not status.full_for_gate
+
+
+def test_gate_watcher_keeps_weight_full_bin_locked_when_sensor_is_blocked(monkeypatch, tmp_path):
+    import types
+    import httpx
+
+    monkeypatch.setenv("FULL_WEIGHT_G", "1000")
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "smartbin.db"))
+    db.init_db()
+    now = time.time()
+    with db.conn() as c:
+        c.execute("INSERT INTO bins(id,name,lat,lng,token_hash,created_at) VALUES(?,?,?,?,?,?)",
+                  ("NTNU-01", "師大一號", 25.0, 121.5, "", now))
+        c.execute("INSERT INTO telemetry(bin_id,ts,fill_pct,weight_g,blocked) VALUES(?,?,?,?,?)",
+                  ("NTNU-01", now, 20, 1200, 1))
+    bin_data = main.list_bins()
+    assert bin_data[0]["state"] == "fault"
+    assert bin_data[0]["full_for_gate"] is True
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: types.SimpleNamespace(json=lambda: bin_data))
+    act, up, g = _gate()
+    g.cfg.bin_id = "NTNU-01"
+    gate.BinStateWatcher(g.cfg, g).poll()
+    assert g.bin_full
+
+
+def test_all_bins_include_latest_weight_and_null_when_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "smartbin.db"))
+    db.init_db()
+    now = time.time()
+    with db.conn() as c:
+        c.execute("INSERT INTO bins(id,name,lat,lng,token_hash,created_at) VALUES(?,?,?,?,?,?)",
+                  ("NTNU-01", "師大一號", 25.0, 121.5, "", now))
+        c.execute("INSERT INTO bins(id,name,lat,lng,token_hash,created_at) VALUES(?,?,?,?,?,?)",
+                  ("EMPTY", "無資料", 25.0, 121.5, "", now))
+        c.execute("INSERT INTO telemetry(bin_id,ts,fill_pct,weight_g,blocked) VALUES(?,?,?,?,?)",
+                  ("NTNU-01", now - 2 * 24 * 3600, 20, 750.5, 0))
+    bins = {b["id"]: b for b in main._all_bins()}
+    assert bins["NTNU-01"]["weight_g"] == 750.5
+    assert bins["EMPTY"]["weight_g"] is None
+
+
+def test_missing_latest_weight_does_not_reuse_heavy_reading(monkeypatch, tmp_path):
+    monkeypatch.setenv("FULL_WEIGHT_G", "1000")
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "smartbin.db"))
+    db.init_db()
+    now = time.time()
+    with db.conn() as c:
+        c.execute("INSERT INTO bins(id,name,lat,lng,token_hash,created_at) VALUES(?,?,?,?,?,?)",
+                  ("NTNU-01", "師大一號", 25.0, 121.5, "", now))
+        c.execute("INSERT INTO telemetry(bin_id,ts,fill_pct,weight_g,blocked) VALUES(?,?,?,?,?)",
+                  ("NTNU-01", now - 2, 20, 1200, 0))
+        c.execute("INSERT INTO telemetry(bin_id,ts,fill_pct,weight_g,blocked) VALUES(?,?,?,?,?)",
+                  ("NTNU-01", now - 1, 3, None, 0))
+
+    bins = {b["id"]: b for b in main._all_bins()}
+    assert bins["NTNU-01"]["state"] == "available"
+    assert bins["NTNU-01"]["weight_g"] is None
 
 
 def test_large_hand_holding_cup_still_opens():

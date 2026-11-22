@@ -6,6 +6,7 @@ services:
       - "127.0.0.1:8000:8000"
     environment:
       ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN in deploy/.env}
+      FULL_WEIGHT_G: ${FULL_WEIGHT_G:-}
       PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL in deploy/.env}
       LINE_CHANNEL_SECRET: ${LINE_CHANNEL_SECRET:-}
       LINE_CHANNEL_ACCESS_TOKEN: ${LINE_CHANNEL_ACCESS_TOKEN:-}

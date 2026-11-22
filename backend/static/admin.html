@@ -51,6 +51,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 const C={available:'#1f6f4a',near_full:'#c98a00',full:'#c0392b',offline:'#6b7280',fault:'#7c3aed'};
+const STATE={available:'有空位',near_full:'快滿',full:'已滿',offline:'離線',fault:'感測被擋'};
 const EVT={overflow:'桶滿外溢',illegal_dumping:'違規傾倒',bag_rejected:'拒收垃圾袋',sensor_blocked:'感測器遮擋',
   ground_waste:'地面垃圾',ground_waste_unknown:'地面垃圾',fire_smoke:'煙霧',tamper:'破壞'};
 const warn=b=>(b.open_events||[]).map(t=>EVT[t]||t).join('、');  // 未處理事件 → 桶要顯示警示
@@ -80,12 +81,12 @@ async function loadBins(signal){
     const f=bins.find(b=>b.id===FOCUS);
     if(f){map.setView([f.lat,f.lng],17);focused=true}
   }
-  document.getElementById('bins').innerHTML='<tr><th>ID</th><th>位置</th><th>狀態</th><th>%</th><th>滿前(h)</th><th>最後上傳</th></tr>'+
-    bins.map(b=>`<tr${warn(b)?' class="warn"':''}><td>${warn(b)?'⚠ ':''}${esc(b.id)}</td><td>${esc(b.name)}</td><td><span class="pill" style="background:${C[b.state]}">${b.state}</span></td>
-      <td>${b.fill_pct??'-'}</td><td>${b.hours_to_full??'-'}</td><td>${ago(b.last_seen)}</td></tr>`).join('');
+  document.getElementById('bins').innerHTML='<tr><th>ID</th><th>位置</th><th>狀態</th><th>%</th><th>重量(g)</th><th>滿前(h)</th><th>最後上傳</th></tr>'+
+    bins.map(b=>`<tr${warn(b)?' class="warn"':''}><td>${warn(b)?'⚠ ':''}${esc(b.id)}</td><td>${esc(b.name)}</td><td><span class="pill" style="background:${C[b.state]}">${STATE[b.state]||esc(b.state)}</span></td>
+      <td>${b.fill_pct??'-'}</td><td>${b.weight_g??'-'}</td><td>${b.hours_to_full??'-'}</td><td>${ago(b.last_seen)}</td></tr>`).join('');
   bins.forEach(b=>{const w=warn(b);
     L.circleMarker([b.lat,b.lng],{radius:w?11:8,color:w?'#c0392b':'#fff',weight:w?4:2,fillColor:C[b.state],fillOpacity:.95})
-      .bindTooltip(`${esc(b.id)} ${esc(b.name)} ${b.fill_pct??'-'}%${w?`<br>⚠ ${esc(w)}`:''}`).addTo(binLayer)});
+      .bindTooltip(`${esc(b.id)} ${esc(b.name)} ${STATE[b.state]||esc(b.state)} ${b.fill_pct??'-'}%${b.weight_g==null?'':` · ${b.weight_g}g`}${w?`<br>⚠ ${esc(w)}`:''}`).addTo(binLayer)});
 }
 async function loadEvents(signal){
   const r=await fetch('/api/events?limit=30',{headers:H,signal});

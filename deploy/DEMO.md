@@ -2,7 +2,7 @@
 
 以下步驟在 Demo 主機的 repo checkout 執行。服務只綁定主機的 `127.0.0.1:8000`；由主機上的 Caddy、Nginx 或既有 HTTPS proxy 將公開網址轉發到該位址。若 proxy 在另一個容器，請讓兩個服務加入同一個 Docker network，並只對 proxy 開放後端連線。
 
-## 1. 設定秘密與公開網址
+## 1. 設定秘密、重量門檻與公開網址
 
 在 repo 根目錄執行；產生至少 32 bytes 的隨機 admin token，並保護本機環境檔：
 
@@ -14,21 +14,24 @@ read -r -p "Demo HTTPS URL (for example https://demo.example.edu): " PUBLIC_URL
 cat > .env <<EOF
 ADMIN_TOKEN=${ADMIN_TOKEN}
 PUBLIC_URL=${PUBLIC_URL}
+# Optional: set a positive gram threshold to mark a bin full by weight.
+FULL_WEIGHT_G=1000
 EOF
 set -a
 . ./.env
 set +a
 ```
 
-輸入實際 HTTPS 網址。`.env` 僅留在主機，不要加入 repo、貼到 issue/PR 或傳到群組。若 Demo 使用 LINE webhook，將 `LINE_CHANNEL_SECRET` 和 `LINE_CHANNEL_ACCESS_TOKEN` 也加到此檔。
+輸入實際 HTTPS 網址。`FULL_WEIGHT_G` 是選用設定；設為正數（例如 `1000`）時，最新一筆 telemetry 的有效重量達到門檻就會判滿；未設定或留空時停用重量判滿。`.env` 僅留在主機，不要加入 repo、貼到 issue/PR 或傳到群組。若 Demo 使用 LINE webhook，將 `LINE_CHANNEL_SECRET` 和 `LINE_CHANNEL_ACCESS_TOKEN` 也加到此檔。
 
-## 2. 啟動後端
+## 2. 啟動後端並確認設定
 
 ```bash
+docker compose -f docker-compose.demo.yml config
 docker compose -f docker-compose.demo.yml up -d --build
 ```
 
-這份設定只啟動 `backend`，不設定 `MQTT_HOST`，所以不會連 MQTT。SQLite 位於 Compose named volume `smartbin-demo-data`；容器重建後資料仍保留。部署後確認 proxy 已提供有效 HTTPS 憑證，並將 `PUBLIC_URL` 設為同一個公開網址。
+檢查 `config` 輸出中 `backend.environment.FULL_WEIGHT_G` 為設定的克數。這份設定只啟動 `backend`，不設定 `MQTT_HOST`，所以不會連 MQTT。SQLite 位於 Compose named volume `smartbin-demo-data`；容器重建後資料仍保留。部署後確認 proxy 已提供有效 HTTPS 憑證，並將 `PUBLIC_URL` 設為同一個公開網址。
 
 ## 3. 驗證健康狀態並建立 NTNU-01
 
@@ -65,11 +68,12 @@ DEVICE_TOKEN=
 curl --fail-with-body --silent --show-error -X POST \
   -H "X-Device-Token: $DEVICE_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"bin_id":"NTNU-01","fill_pct":50}' \
+  -d '{"bin_id":"NTNU-01","fill_pct":20,"weight_g":1200}' \
   "$PUBLIC_URL/api/telemetry"
+curl --fail-with-body --silent --show-error "$PUBLIC_URL/api/bins"
 ```
 
-`POST /api/telemetry` 成功時回應 HTTP 204。重新載入 `$PUBLIC_URL/`，確認地圖顯示 NTNU-01。健康檢查、桶清單和地圖均應使用 HTTPS 公開網址。
+啟用 `FULL_WEIGHT_G=1000` 時，第二次 `/api/bins` 回應中 NTNU-01 應是 `full` 且重量為 `1200`。若要確認 HX711 缺值不沿用舊重量，接著送出不含 `weight_g` 的低滿度資料（例如 `3%`），桶不應再因先前重量判滿。`POST /api/telemetry` 成功時回應 HTTP 204。重新載入 `$PUBLIC_URL/`，確認地圖顯示 NTNU-01。健康檢查、桶清單和地圖均應使用 HTTPS 公開網址。
 
 ## 維護
 
