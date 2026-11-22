@@ -114,10 +114,16 @@ python3 edge/pi-demo/node_pi.py --depth-cm 30
 sudo apt install imx500-all python3-picamera2 python3-gpiozero
 sudo cp smartbin-gate.service /etc/systemd/system/ && sudo systemctl enable --now smartbin-gate
 ```
-GPIO：伺服 18、綠燈 23、紅燈 24、蜂鳴器 25（`Cfg` 可改）。
+GPIO：伺服 18、綠燈 23、紅燈 24、蜂鳴器 25（`Cfg` 可改）。閘門每 60 秒向後端查桶子狀態，桶滿時小垃圾也不開閘；查不到就沿用上次結果。
+
+**劇本模式（#6）**：視覺還沒好之前，用 mock 劇本驅動實體擋板。伺服走 pigpio 的硬體計時 PWM，比較不會抖。
+```bash
+sudo apt install -y pigpio python3-pigpio && sudo systemctl enable --now pigpiod
+python3 edge/vision-gate/gate.py --backend mock --scenario edge/vision-gate/scenarios/demo.json --drive --fps 1 --offline
+```
+擋板沒開或關到位時，用 `--open-angle`／`--close-angle`（0–180°，預設 90／0；0.5–2.5 ms 對應 0–180°）對齊實物。
 
 沒有 AI Camera 時可以用 USB 視訊鏡頭跑 `--backend onnx`（Pi 4 CPU 推論）。鏡頭不是 `/dev/video0` 時，先用 `v4l2-ctl --list-devices` 找編號，再用 `--camera 2` 或 `--camera /dev/video2` 指定（也可設環境變數 `GATE_CAMERA`）。
-閘門每 60 秒向後端查桶子狀態，桶滿時小垃圾也不開閘；查不到就沿用上次結果。
 
 **模型**：預設類別 `cup, bottle, can, paper, lunchbox, garbage_bag, hand, litter`。
 1. 資料：TACO 公開資料集 + 自己在師大周邊拍的垃圾袋 / 飲料杯（含夜間）
@@ -143,7 +149,7 @@ python edge/vision-gate/gate.py --backend onnx --model yolo11n.onnx --labels coc
 | POST | `/api/telemetry`、`/api/events` | `X-Device-Token` |
 | GET | `/api/bins`、`/api/nearest?lat=&lng=` | 公開 |
 | POST | `/api/bins`、`/api/dispatch/plan`、`/api/events/{id}/resolve` | `Authorization: Bearer <ADMIN_TOKEN>` |
-| GET | `/api/events`、`/api/dispatch/latest` | admin |
+| GET | `/api/events`、`/api/dispatch/latest`、`/api/admin/bins`（調度台用，多 `last_seen`、`open_events`） | admin |
 | POST | `/line/webhook` | LINE 簽章驗證 |
 
 ## 下一步
