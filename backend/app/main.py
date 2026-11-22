@@ -143,16 +143,14 @@ def _record_event(bin_id, ts, etype, conf, detail, dedupe_s=0):
 def _bin_status(bin_id: str, now: float | None = None) -> logic.BinStatus | None:
     now = now or time.time()
     with db.conn() as c:
-        rows = c.execute("SELECT ts, fill_pct, blocked FROM telemetry WHERE bin_id=? AND ts>? ORDER BY ts",
+        rows = c.execute("SELECT ts, fill_pct, weight_g, blocked FROM telemetry WHERE bin_id=? AND ts>? ORDER BY ts",
                          (bin_id, now - 24 * 3600)).fetchall()
     if not rows:
         return logic.status_of([], False, now=now)
     samples = [(r["ts"], r["fill_pct"]) for r in rows]
-    with db.conn() as c:
-        latest_weight = c.execute(
-            "SELECT weight_g FROM telemetry WHERE bin_id=? AND ts>? AND weight_g IS NOT NULL ORDER BY ts DESC LIMIT 1",
-            (bin_id, now - 24 * 3600)).fetchone()
-    weight_g = latest_weight["weight_g"] if latest_weight else None
+    # Use the latest report as a unit: a missing weight means the scale timed
+    # out, so an older heavy reading must not keep the bin classified as full.
+    weight_g = rows[-1]["weight_g"]
     prev = None  # 依時間跑一遍狀態機，讓遲滯生效
     for _, f in samples[-12:-1]:
         prev = logic.classify(f, prev)
@@ -163,7 +161,7 @@ def _all_bins() -> list[dict]:
     with db.conn() as c:
         bins = [dict(r) for r in c.execute(
             "SELECT b.id,b.name,b.lat,b.lng,b.capacity_l,b.depth_mm,b.has_gate,"
-            "(SELECT t.weight_g FROM telemetry t WHERE t.bin_id=b.id AND t.weight_g IS NOT NULL "
+            "(SELECT t.weight_g FROM telemetry t WHERE t.bin_id=b.id "
             "ORDER BY t.ts DESC LIMIT 1) AS weight_g FROM bins b ORDER BY b.id")]
         evs = c.execute("SELECT bin_id, type FROM events WHERE resolved=0 AND ts>?",
                         (time.time() - 24 * 3600,)).fetchall()

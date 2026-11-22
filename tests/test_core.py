@@ -121,6 +121,24 @@ def test_all_bins_include_latest_weight_and_null_when_missing(monkeypatch, tmp_p
     assert bins["EMPTY"]["weight_g"] is None
 
 
+def test_missing_latest_weight_does_not_reuse_heavy_reading(monkeypatch, tmp_path):
+    monkeypatch.setenv("FULL_WEIGHT_G", "1000")
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "smartbin.db"))
+    db.init_db()
+    now = time.time()
+    with db.conn() as c:
+        c.execute("INSERT INTO bins(id,name,lat,lng,token_hash,created_at) VALUES(?,?,?,?,?,?)",
+                  ("NTNU-01", "師大一號", 25.0, 121.5, "", now))
+        c.execute("INSERT INTO telemetry(bin_id,ts,fill_pct,weight_g,blocked) VALUES(?,?,?,?,?)",
+                  ("NTNU-01", now - 2, 20, 1200, 0))
+        c.execute("INSERT INTO telemetry(bin_id,ts,fill_pct,weight_g,blocked) VALUES(?,?,?,?,?)",
+                  ("NTNU-01", now - 1, 3, None, 0))
+
+    bins = {b["id"]: b for b in main._all_bins()}
+    assert bins["NTNU-01"]["state"] == "available"
+    assert bins["NTNU-01"]["weight_g"] is None
+
+
 def test_large_hand_holding_cup_still_opens():
     act, up, g = _gate()
     frame = [("cup", .9, (.45, .12, .52, .24)), ("hand", .9, (.38, .06, .60, .28))]
