@@ -103,6 +103,31 @@ def test_blocked_sensor_status_keeps_latest_weight(monkeypatch):
     status = logic.status_of([(100_000, 20)], True, now=100_001, weight_g=1200)
     assert status.state == "fault"
     assert status.weight_g == 1200
+    assert status.full_for_gate
+
+
+def test_gate_watcher_keeps_weight_full_bin_locked_when_sensor_is_blocked(monkeypatch, tmp_path):
+    import types
+    import httpx
+
+    monkeypatch.setenv("FULL_WEIGHT_G", "1000")
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "smartbin.db"))
+    db.init_db()
+    now = time.time()
+    with db.conn() as c:
+        c.execute("INSERT INTO bins(id,name,lat,lng,token_hash,created_at) VALUES(?,?,?,?,?,?)",
+                  ("NTNU-01", "師大一號", 25.0, 121.5, "", now))
+        c.execute("INSERT INTO telemetry(bin_id,ts,fill_pct,weight_g,blocked) VALUES(?,?,?,?,?)",
+                  ("NTNU-01", now, 20, 1200, 1))
+    bin_data = main.list_bins()
+    assert bin_data[0]["state"] == "fault"
+    assert bin_data[0]["full_for_gate"] is True
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: types.SimpleNamespace(json=lambda: bin_data))
+    act, up, g = _gate()
+    g.cfg.bin_id = "NTNU-01"
+    gate.BinStateWatcher(g.cfg, g).poll()
+    assert g.bin_full
 
 
 def test_all_bins_include_latest_weight_and_null_when_missing(monkeypatch, tmp_path):

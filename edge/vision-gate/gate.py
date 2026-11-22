@@ -272,7 +272,7 @@ class BinStateWatcher(threading.Thread):
             return
         for b in bins:
             if b["id"] == self.cfg.bin_id:
-                self.gate.bin_full = b["state"] == "full"
+                self.gate.bin_full = b["state"] == "full" or bool(b.get("full_for_gate", False))
 
     def run(self):
         while True:

@@ -173,6 +173,7 @@ def _all_bins() -> list[dict]:
         st = _bin_status(b["id"])
         b.update(state=st.state, fill_pct=st.fill_pct, rate_pct_per_h=st.rate_pct_per_h,
                  hours_to_full=st.hours_to_full, last_seen=st.last_seen,
+                 full_for_gate=st.full_for_gate,
                  open_events=open_ev.get(b["id"], []), has_gate=bool(b["has_gate"]))
     return bins
 
@@ -234,7 +235,8 @@ def dispatch_latest():
 
 
 # ---------------------------------------------------------------- routes: public
-PUBLIC_FIELDS = ("id", "name", "lat", "lng", "state", "fill_pct", "weight_g", "hours_to_full", "has_gate")
+PUBLIC_FIELDS = ("id", "name", "lat", "lng", "state", "fill_pct", "weight_g", "hours_to_full",
+                 "has_gate", "full_for_gate")
 
 
 @app.get("/api/bins")

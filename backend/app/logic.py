@@ -28,6 +28,7 @@ class BinStatus:
     hours_to_full: float | None
     last_seen: float | None
     weight_g: float | None = None
+    full_for_gate: bool = False
 
 
 def classify(fill: float, prev_state: str | None) -> str:
@@ -86,17 +87,19 @@ def status_of(samples: list[tuple[float, float]], blocked: bool, prev_state: str
     htf = None
     if rate and rate > 0.01:
         htf = max((FULL_PCT - last_fill) / rate, 0.0)
+    full_for_gate = now - last_ts <= OFFLINE_AFTER_S and (
+        classify(last_fill, prev_state) == "full"
+        or (full_weight_g is not None and weight_g is not None and weight_g >= full_weight_g)
+    )
     if now - last_ts > OFFLINE_AFTER_S:
         state = "offline"
     elif blocked:
         state = "fault"
-    elif full_weight_g is not None and weight_g is not None and weight_g >= full_weight_g:
-        state = "full"
     else:
-        state = classify(last_fill, prev_state)
+        state = "full" if full_for_gate else classify(last_fill, prev_state)
     return BinStatus(state, round(last_fill, 1), None if rate is None else round(rate, 2),
                      None if htf is None else round(htf, 2), last_ts,
-                     None if weight_g is None else round(weight_g, 1))
+                     None if weight_g is None else round(weight_g, 1), full_for_gate)
 
 
 def fuse_ground_event(fill_pct: float | None) -> str:
