@@ -93,7 +93,10 @@ PlatformIO 專案，板子 `seeed_xiao_esp32c3`。先改 `include/config.h`（Wi
 sudo apt install imx500-all python3-picamera2 python3-gpiozero
 sudo cp smartbin-gate.service /etc/systemd/system/ && sudo systemctl enable --now smartbin-gate
 ```
-GPIO：伺服 18、綠燈 23、紅燈 24、蜂鳴器 25（`Cfg` 可改）。閘門每 60 秒向後端查桶子狀態，桶滿時小垃圾也不開閘；查不到就沿用上次結果。
+GPIO：伺服 18、綠燈 23、紅燈 24、蜂鳴器 25（`Cfg` 可改）。
+
+沒有 AI Camera 時可以用 USB 視訊鏡頭跑 `--backend onnx`（Pi 4 CPU 推論）。鏡頭不是 `/dev/video0` 時，先用 `v4l2-ctl --list-devices` 找編號，再用 `--camera 2` 或 `--camera /dev/video2` 指定（也可設環境變數 `GATE_CAMERA`）。
+閘門每 60 秒向後端查桶子狀態，桶滿時小垃圾也不開閘；查不到就沿用上次結果。
 
 **模型**：預設類別 `cup, bottle, can, paper, lunchbox, garbage_bag, hand, litter`。
 1. 資料：TACO 公開資料集 + 自己在師大周邊拍的垃圾袋 / 飲料杯（含夜間）
