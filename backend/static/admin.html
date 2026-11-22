@@ -70,14 +70,11 @@ const map=L.map('map').setView([25.0215,121.5310],15);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
 const binLayer=L.layerGroup().addTo(map), routeLayer=L.layerGroup().addTo(map);
 
-// 每次請求拿一個序號，只畫最新一輪的回應：按「處理」前發出的舊請求晚回來，也不會把警示畫回去
-let binSeq=0, evtSeq=0;
-async function loadBins(){
-  const s=++binSeq;
-  const r=await fetch('/api/admin/bins',{headers:H});
+async function loadBins(signal){
+  const r=await fetch('/api/admin/bins',{headers:H,signal});
   if(!r.ok) return;  // token 錯誤由 loadEvents 提示並重新登入
   const bins=await r.json();
-  if(s!==binSeq) return;
+  if(signal.aborted) return;
   binLayer.clearLayers();
   if(DEMO&&!focused){
     const f=bins.find(b=>b.id===FOCUS);
@@ -90,17 +87,39 @@ async function loadBins(){
     L.circleMarker([b.lat,b.lng],{radius:w?11:8,color:w?'#c0392b':'#fff',weight:w?4:2,fillColor:C[b.state],fillOpacity:.95})
       .bindTooltip(`${esc(b.id)} ${esc(b.name)} ${b.fill_pct??'-'}%${w?`<br>⚠ ${esc(w)}`:''}`).addTo(binLayer)});
 }
-async function loadEvents(){
-  const s=++evtSeq;
-  const r=await fetch('/api/events?limit=30',{headers:H});
+async function loadEvents(signal){
+  const r=await fetch('/api/events?limit=30',{headers:H,signal});
+  if(signal.aborted) return;
   if(r.status===401){sessionStorage.removeItem('adm');alert('token 錯誤');location.reload();return}
+  if(!r.ok) return;
   const ev=await r.json();
-  if(s!==evtSeq) return;
+  if(signal.aborted) return;
   document.getElementById('events').innerHTML=ev.length?ev.map(e=>`<tr><td>${new Date(e.ts*1000).toLocaleTimeString()}</td>
     <td>${esc(e.bin_id)}</td><td>${EVT[e.type]||esc(e.type)}</td>
     <td>${e.resolved?'✓':`<button class="ghost" onclick="resolve(${e.id})">處理</button>`}</td></tr>`).join(''):'<tr><td>無</td></tr>';
 }
-async function resolve(id){await fetch(`/api/events/${id}/resolve`,{method:'POST',headers:H});loadEvents();loadBins()}
+let poll=null;
+async function refresh(){
+  if(poll&&!poll.signal.aborted) return;
+  const controller=new AbortController();
+  poll=controller;
+  const timeout=setTimeout(()=>controller.abort(),15000);
+  await Promise.allSettled([loadBins(controller.signal),loadEvents(controller.signal)]);
+  clearTimeout(timeout);
+  if(poll===controller) poll=null;
+}
+
+async function resolve(id){
+  try{
+    const r=await fetch(`/api/events/${id}/resolve`,{method:'POST',headers:H});
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+  }catch{
+    alert('事件處理失敗，請再試一次。');
+    return;
+  }
+  poll?.abort();
+  refresh();
+}
 
 document.getElementById('plan').onclick=async()=>{
   const body={vehicles:+veh.value,vehicle_capacity_l:+cap.value,horizon_h:+hz.value};
@@ -123,7 +142,7 @@ document.getElementById('plan').onclick=async()=>{
       html:`<div style="background:${VCOL[rt.vehicle%5]};color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;font-size:12px;font-weight:700">${i+1}</div>`})}).addTo(routeLayer));
   });
 };
-loadBins();loadEvents();setInterval(()=>{loadBins();loadEvents()},DEMO?5000:30000);
+refresh();setInterval(refresh,DEMO?5000:30000);
 </script>
 </body>
 </html>
