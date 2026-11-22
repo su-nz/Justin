@@ -55,6 +55,7 @@ class Cfg:
     servo_max_pulse: float = 0.0025
     servo_open_angle: float = 90.0
     servo_close_angle: float = 0.0
+    servo_settle_s: float = 0.6     # SG90 轉 90° 約 0.3 s；結束時保留關門訊號這麼久再放掉
     led_green: int = 23
     led_red: int = 24
     buzzer_pin: int = 25
@@ -207,6 +208,8 @@ class Actuators:
             self.servo = AngularServo(cfg.servo_pin, min_angle=0, max_angle=180,
                                       min_pulse_width=cfg.servo_min_pulse,
                                       max_pulse_width=cfg.servo_max_pulse,
+                                      # 第一個 PWM 就是校正後的關門角度，不要先送預設的 0°
+                                      initial_angle=cfg.servo_close_angle,
                                       pin_factory=servo_pin_factory())
             self.g, self.r = LED(cfg.led_green), LED(cfg.led_red)
             self.buzzer = Buzzer(cfg.buzzer_pin)
@@ -237,6 +240,7 @@ class Actuators:
     def shutdown(self):
         self.close()
         if not self.dry:
+            time.sleep(self.cfg.servo_settle_s)  # 保留關門訊號，讓擋板關到位再放掉
             self.servo.detach()
 
 

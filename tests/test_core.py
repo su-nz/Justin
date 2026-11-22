@@ -138,6 +138,17 @@ def _fake_gpiozero(monkeypatch, pigpio_ok):
 
     class AngularServo(Dev):
         history = []
+        events = []
+
+        def __init__(self, pin, **kw):
+            super().__init__(pin, **kw)
+            # gpiozero 建立時就送出 initial_angle，沒指定時預設是 0°
+            initial = kw.get("initial_angle", 0)
+            if initial is not None:
+                self.history.append(initial)
+
+        def detach(self):
+            self.events.append(("detach", self.angle))
 
         @property
         def angle(self):
@@ -176,7 +187,7 @@ def test_actuators_servo_uses_pigpio_and_configured_angles(monkeypatch):
     assert servo.kw["min_pulse_width"] == 0.0005 and servo.kw["max_pulse_width"] == 0.0025
     assert (servo.kw["min_angle"], servo.kw["max_angle"]) == (0, 180)
     assert isinstance(servo.kw["pin_factory"], factory)
-    assert servo.angle == 10       # 建立時先關閘
+    assert servo.history[0] == 10  # 第一個 PWM 就是校正後的關門角度，不會先跑到 0°
     act.open()
     assert servo.angle == 100
     act.close()
@@ -205,3 +216,15 @@ def test_camera_source_index_or_path():
     assert gate.camera_source("0") == 0
     assert gate.camera_source(" 2 ") == 2
     assert gate.camera_source("/dev/video2") == "/dev/video2"
+
+
+def test_shutdown_holds_close_signal_before_detach(monkeypatch):
+    made, _ = _fake_gpiozero(monkeypatch, pigpio_ok=True)
+    cfg = gate.Cfg()
+    act = gate.Actuators(cfg, dry=False)
+    servo = made["AngularServo"][0]
+    monkeypatch.setattr(gate.time, "sleep", lambda s: servo.events.append(("sleep", s)))
+    act.open()
+    act.shutdown()   # 擋板開著時結束
+    assert servo.events == [("sleep", cfg.servo_settle_s), ("detach", cfg.servo_close_angle)]
+    assert cfg.servo_settle_s >= 0.3
