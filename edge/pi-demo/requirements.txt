@@ -1,5 +1,5 @@
 # Pi 4（Raspberry Pi OS Bookworm）先裝系統套件：
-#   sudo apt install -y python3-gpiozero python3-lgpio i2c-tools
+#   sudo apt install -y python3-lgpio i2c-tools
 #   sudo raspi-config nonint do_i2c 0
 # 再裝：pip install --break-system-packages -r edge/pi-demo/requirements.txt
 httpx>=0.27

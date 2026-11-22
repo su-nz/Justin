@@ -118,93 +118,151 @@ def lcd_lines(bin_id: str, fill_pct: float | None, weight_g: float | None,
 
 
 # ----------------------------------------------------------------------------- 硬體
-class Sonar:
-    """HC-SR04（gpiozero）。回傳 9 次量測的中位數（cm），量不到回傳 None。"""
+class _LgpioBackend:
+    """Pi 4／Pi 5（Bookworm）預設的 GPIO 函式庫。"""
 
-    def __init__(self, trig: int = SONAR_TRIG, echo: int = SONAR_ECHO):
-        from gpiozero import DistanceSensor
-        # queue_len=1：關掉 gpiozero 內建的平均，自己取中位數
-        self.dev = DistanceSensor(echo=echo, trigger=trig, max_distance=SONAR_MAX_M,
-                                  queue_len=1, partial=True)
-
-    def read_cm(self) -> float | None:
-        vals = []
-        for _ in range(SONAR_SAMPLES):
-            time.sleep(0.07)  # HC-SR04 建議兩次量測間隔 > 60 ms
-            d = self.dev.distance
-            if d is not None and d < SONAR_MAX_M * 0.98:  # 沒回波時 gpiozero 給 max_distance
-                vals.append(d * 100)
-        return robust_median(vals, min_count=3)
-
-    def close(self) -> None:
-        self.dev.close()
-
-
-class _LgpioPins:
-    def __init__(self, dt: int, sck: int):
+    def __init__(self):
         import lgpio
         self.lg = lgpio
         self.h = lgpio.gpiochip_open(0)
-        self.dt, self.sck = dt, sck
-        lgpio.gpio_claim_output(self.h, sck, 0)
-        # 上拉：DT 線沒接時讀到高電位 → 逾時，而不是讀到浮接的亂數
-        lgpio.gpio_claim_input(self.h, dt, lgpio.SET_PULL_UP)
 
-    def sck_write(self, v: int) -> None:
-        self.lg.gpio_write(self.h, self.sck, v)
+    def output(self, pin: int, value: int = 0) -> None:
+        self.lg.gpio_claim_output(self.h, pin, value)
 
-    def dt_read(self) -> int:
-        return self.lg.gpio_read(self.h, self.dt)
+    def input(self, pin: int, pull_up: bool = False) -> None:
+        self.lg.gpio_claim_input(self.h, pin, self.lg.SET_PULL_UP if pull_up else 0)
+
+    def write(self, pin: int, value: int) -> None:
+        self.lg.gpio_write(self.h, pin, value)
+
+    def read(self, pin: int) -> int:
+        return self.lg.gpio_read(self.h, pin)
 
     def close(self) -> None:
         self.lg.gpiochip_close(self.h)
 
 
-class _RpiGpioPins:
-    def __init__(self, dt: int, sck: int):
+class _RpiGpioBackend:
+    """舊版系統沒有 lgpio 時退回 RPi.GPIO。"""
+
+    def __init__(self):
         import RPi.GPIO as GPIO
         self.GPIO = GPIO
-        self.dt, self.sck = dt, sck
+        self.pins: list[int] = []
         GPIO.setwarnings(False)
         GPIO.setmode(GPIO.BCM)
-        GPIO.setup(sck, GPIO.OUT, initial=GPIO.LOW)
-        GPIO.setup(dt, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-    def sck_write(self, v: int) -> None:
-        self.GPIO.output(self.sck, v)
+    def output(self, pin: int, value: int = 0) -> None:
+        self.GPIO.setup(pin, self.GPIO.OUT, initial=value)
+        self.pins.append(pin)
 
-    def dt_read(self) -> int:
-        return self.GPIO.input(self.dt)
+    def input(self, pin: int, pull_up: bool = False) -> None:
+        self.GPIO.setup(pin, self.GPIO.IN, pull_up_down=self.GPIO.PUD_UP if pull_up else self.GPIO.PUD_OFF)
+        self.pins.append(pin)
+
+    def write(self, pin: int, value: int) -> None:
+        self.GPIO.output(pin, value)
+
+    def read(self, pin: int) -> int:
+        return self.GPIO.input(pin)
 
     def close(self) -> None:
-        self.GPIO.cleanup((self.dt, self.sck))
+        if self.pins:
+            self.GPIO.cleanup(self.pins)
+
+
+def open_gpio():
+    try:
+        return _LgpioBackend()
+    except ImportError:
+        return _RpiGpioBackend()
+
+
+def _wait_level(gpio, pin: int, level: int, timeout: float) -> float | None:
+    """等 pin 變成 level，回傳當下時間；逾時回傳 None。"""
+    deadline = time.perf_counter() + timeout
+    while gpio.read(pin) != level:
+        if time.perf_counter() > deadline:
+            return None
+    return time.perf_counter()
+
+
+class Sonar:
+    """HC-SR04。每次都重新送 Trig、量 Echo 脈寬，沒有回波就是 None，不會沿用舊值。
+
+    不用 gpiozero 的 DistanceSensor：它會丟掉逾時的樣本，`.distance` 繼續回傳上一次的快取，
+    冷啟動從沒收到回波時還會回傳 0（被換算成 100% 滿）。
+    """
+
+    RISE_TIMEOUT_S = 0.01     # Trig 後約 0.5 ms Echo 就會拉高
+    FALL_TIMEOUT_S = 0.025    # 沒回波時有些模組會拉高約 38 ms，超過就算量不到
+
+    def __init__(self, gpio, trig: int = SONAR_TRIG, echo: int = SONAR_ECHO,
+                 max_cm: float = SONAR_MAX_M * 100):
+        self.gpio, self.trig, self.echo, self.max_cm = gpio, trig, echo, max_cm
+        gpio.output(trig, 0)
+        gpio.input(echo)  # Echo 經分壓接進來，電位是確定的，不用上拉
+
+    def ping_cm(self) -> float | None:
+        g = self.gpio
+        if _wait_level(g, self.echo, 0, self.FALL_TIMEOUT_S) is None:
+            return None  # 上一次的 Echo 還沒結束
+        g.write(self.trig, 1)
+        time.sleep(0.00001)  # ≥ 10 µs 觸發脈衝
+        g.write(self.trig, 0)
+        t0 = _wait_level(g, self.echo, 1, self.RISE_TIMEOUT_S)
+        if t0 is None:
+            return None
+        t1 = _wait_level(g, self.echo, 0, self.FALL_TIMEOUT_S)
+        if t1 is None:
+            return None
+        cm = (t1 - t0) * 34300 / 2
+        return cm if cm <= self.max_cm else None
+
+    def read_cm(self) -> float | None:
+        vals = []
+        for i in range(SONAR_SAMPLES):
+            if i:
+                time.sleep(0.06)  # HC-SR04 建議兩次量測間隔 > 60 ms
+            d = self.ping_cm()
+            if d is not None:
+                vals.append(d)
+        return robust_median(vals, min_count=3)
+
+    def close(self) -> None:
+        pass  # GPIO 由 main() 統一關閉
 
 
 class HX711:
     """軟體模擬 HX711 時序，A 通道、增益 128。"""
 
-    def __init__(self, dt: int = HX_DT, sck: int = HX_SCK, pins=None):
-        if pins is None:
-            try:
-                pins = _LgpioPins(dt, sck)
-            except ImportError:
-                pins = _RpiGpioPins(dt, sck)
-        self.pins = pins
+    def __init__(self, gpio, dt: int = HX_DT, sck: int = HX_SCK):
+        self.gpio, self.dt, self.sck = gpio, dt, sck
+        gpio.output(sck, 0)
+        # 上拉：DT 線沒接時讀到高電位 → 逾時，而不是讀到浮接的亂數
+        gpio.input(dt, pull_up=True)
 
     def read_raw(self, timeout: float = HX_TIMEOUT_S) -> int | None:
-        p = self.pins
+        g = self.gpio
         deadline = time.monotonic() + timeout
-        while p.dt_read():  # DT 拉低代表資料準備好
+        while g.read(self.dt):  # DT 拉低代表資料準備好
             if time.monotonic() > deadline:
                 return None
             time.sleep(0.001)
         v = 0
-        for _ in range(24):
-            p.sck_write(1)
-            v = (v << 1) | p.dt_read()
-            p.sck_write(0)
-        p.sck_write(1)  # 第 25 個脈波：下一筆用 A 通道、增益 128
-        p.sck_write(0)
+        try:
+            for _ in range(24):
+                g.write(self.sck, 1)
+                v = (v << 1) | g.read(self.dt)
+                g.write(self.sck, 0)
+            g.write(self.sck, 1)  # 第 25 個脈波：下一筆用 A 通道、增益 128
+            g.write(self.sck, 0)
+        finally:
+            # 讀到一半出錯也要把 SCK 拉低：SCK 高電位超過 60 µs 會讓 HX711 進入省電，下一輪就讀不到
+            try:
+                g.write(self.sck, 0)
+            except Exception:
+                log.exception("HX711 SCK 拉低失敗")
         raw = to_signed24(v)
         if raw in (0x7FFFFF, -0x800000):  # 飽和：通常是接線錯或荷重元沒接
             return None
@@ -222,7 +280,7 @@ class HX711:
         return robust_median(vals, min_count=max(3, n // 2))
 
     def close(self) -> None:
-        self.pins.close()
+        pass  # GPIO 由 main() 統一關閉
 
 
 class FakeSonar:
@@ -350,8 +408,13 @@ class Node:
                  "--" if fill is None else f"{fill:.1f}",
                  "--" if weight is None else f"{weight:.0f}", blocked)
         if fill is None:
-            log.warning("還沒量到任何距離，後端需要 fill_pct，這輪不上傳")
-            return None
+            if not blocked:
+                log.warning("還沒量到任何距離，後端需要 fill_pct，這輪不上傳")
+                return None
+            # 開機後一直沒有回波 → 已判定遮擋，一定要讓後端知道。後端需要 fill_pct，
+            # 照韌體的做法送 0；地圖看的是 blocked（顯示維護中），不會當成空桶。
+            log.warning("開機後一直量不到距離，判定遮擋；滿度未知，先送 0%")
+            fill = 0.0
         payload = build_payload(self.bin_id, fill, dist, weight, blocked)
         if self.poster is not None and self.poster(payload):
             log.info("已上傳 %s", payload)
@@ -411,15 +474,16 @@ def parse_args(argv=None) -> argparse.Namespace:
     return a
 
 
-def _make_scale(a: argparse.Namespace, sonar):
+def _make_scale(a: argparse.Namespace, sonar, gpio):
     if a.dry:
         return FakeScale(sonar)
-    return HX711(a.hx_dt, a.hx_sck)
+    return HX711(gpio, a.hx_dt, a.hx_sck)
 
 
 def calibrate(a: argparse.Namespace) -> int:
     """--tare / --calibrate：印出要設的環境變數後結束。"""
-    scale = _make_scale(a, FakeSonar(a.depth_cm) if a.dry else None)
+    gpio = None if a.dry else open_gpio()
+    scale = _make_scale(a, FakeSonar(a.depth_cm) if a.dry else None, gpio)
     try:
         if a.tare:
             print("量測空桶中，請不要碰桶子…")
@@ -448,6 +512,8 @@ def calibrate(a: argparse.Namespace) -> int:
         return 0
     finally:
         scale.close()
+        if gpio is not None:
+            gpio.close()
 
 
 def main(argv=None) -> int:
@@ -461,7 +527,8 @@ def main(argv=None) -> int:
     if not a.token:
         log.warning("沒有 DEVICE_TOKEN，後端會回 401")
 
-    sonar = FakeSonar(a.depth_cm) if a.dry else Sonar()
+    gpio = None if a.dry else open_gpio()
+    sonar = FakeSonar(a.depth_cm) if a.dry else Sonar(gpio)
     scale = None
     hx_scale, hx_offset = a.hx_scale, a.hx_offset
     if a.dry and not a.no_scale:
@@ -472,7 +539,7 @@ def main(argv=None) -> int:
                         "這次不送 weight_g")
         else:
             try:
-                scale = HX711(a.hx_dt, a.hx_sck)
+                scale = HX711(gpio, a.hx_dt, a.hx_sck)
             except Exception as e:
                 log.warning("HX711 初始化失敗（%s），這次不送 weight_g", e)
     lcd = Lcd(a.lcd_addr, enabled=not (a.dry or a.no_lcd))
@@ -486,7 +553,7 @@ def main(argv=None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        for dev in (sonar, scale, lcd):
+        for dev in (sonar, scale, lcd, gpio):
             if dev is not None:
                 try:
                     dev.close()

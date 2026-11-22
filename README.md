@@ -97,7 +97,7 @@ Demo 用 Pi 4 取代 ESP32：`node_pi.py` 用超音波量 `fill_pct`、HX711 量
 | 3 / 5（I²C） | LCD1602 PCF8574（0x27） |
 
 ```bash
-sudo apt install -y python3-gpiozero python3-lgpio i2c-tools
+sudo apt install -y python3-lgpio i2c-tools
 pip install --break-system-packages -r edge/pi-demo/requirements.txt
 python3 edge/pi-demo/node_pi.py --tare                         # 空桶 → export HX711_OFFSET=...
 HX711_OFFSET=... python3 edge/pi-demo/node_pi.py --calibrate 600   # 放 600 g → export HX711_SCALE=...

@@ -1,5 +1,6 @@
 """edge/pi-demo/node_pi.py 的單元測試，不需要 Pi。"""
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,16 +49,30 @@ def test_lcd_lines():
     assert all(len(s) <= 16 for s in node_pi.lcd_lines("A-VERY-LONG-BIN-ID", 100, 99999, True))
 
 
-class FakePins:
-    """依 HX711 時序吐出預先設定的 24 位元值。"""
+class FakeHXGpio:
+    """依 HX711 時序吐出預先設定的 24 位元值；可以指定第幾次讀 DT 時丟出例外。"""
 
-    def __init__(self, words, ready=True):
+    def __init__(self, words, ready=True, fail_on_read=None, dt=22, sck=27):
         self.words = list(words)
         self.ready = ready
+        self.fail_on_read = fail_on_read
+        self.dt, self.sck = dt, sck
         self.bits = []
         self.pulses = 0
+        self.level = {}
+        self.reads = 0
 
-    def dt_read(self):
+    def output(self, pin, value=0):
+        self.level[pin] = value
+
+    def input(self, pin, pull_up=False):
+        pass
+
+    def read(self, pin):
+        assert pin == self.dt
+        self.reads += 1
+        if self.fail_on_read == self.reads:
+            raise OSError("GPIO read failed")
         if not self.bits:
             if not self.ready or not self.words:
                 return 1  # 沒準備好（或沒接，上拉成高電位）
@@ -66,27 +81,132 @@ class FakePins:
             return 0
         return self.bits[0]
 
-    def sck_write(self, v):
-        if v:
+    def write(self, pin, value):
+        assert pin == self.sck
+        if value and not self.level.get(pin):
             self.pulses += 1
-        elif self.bits:
+        elif not value and self.level.get(pin) and self.bits:
             self.bits.pop(0)
+        self.level[pin] = value
 
     def close(self):
         pass
 
 
 def test_hx711_reads_signed_values():
-    hx = node_pi.HX711(pins=FakePins([0x000123, 0xFFFF00]))
+    g = FakeHXGpio([0x000123, 0xFFFF00])
+    hx = node_pi.HX711(g)
     assert hx.read_raw() == 0x123
     assert hx.read_raw() == -256
-    assert hx.pins.pulses == 50  # 每筆 24 + 1 個脈波（A 通道、增益 128）
+    assert g.pulses == 50  # 每筆 24 + 1 個脈波（A 通道、增益 128）
+    assert g.level[27] == 0
 
 
 def test_hx711_timeout_returns_none():
-    hx = node_pi.HX711(pins=FakePins([], ready=False))
+    hx = node_pi.HX711(FakeHXGpio([], ready=False))
     assert hx.read_raw(timeout=0.01) is None
     assert hx.read_median() is None
+
+
+def test_hx711_read_error_leaves_sck_low_and_recovers():
+    # 第 1 次讀 DT 是「資料就緒」，第 6 次是讀第 5 個位元，這時 SCK 是高電位
+    g = FakeHXGpio([0x000123, 0x000456], fail_on_read=6)
+    hx = node_pi.HX711(g)
+    try:
+        hx.read_raw()
+        assert False, "應該要把 GPIO 錯誤往上丟"
+    except OSError:
+        pass
+    assert g.level[27] == 0  # SCK 一定要回到低電位，HX711 才不會進入省電
+    g.bits = []              # 模擬 HX711 丟棄讀到一半的資料
+    assert hx.read_raw() == 0x456
+
+
+class FakeEchoGpio:
+    """模擬 HC-SR04：Trig 下降緣後 0.2 ms 拉高 Echo，維持指定脈寬；None 代表這次沒有回波。"""
+
+    def __init__(self, pulses, trig=5, echo=6):
+        self.pulses = list(pulses)
+        self.trig, self.echo = trig, echo
+        self.start = self.width = None
+
+    def output(self, pin, value=0):
+        pass
+
+    def input(self, pin, pull_up=False):
+        pass
+
+    def write(self, pin, value):
+        assert pin == self.trig
+        if value == 0:
+            w = self.pulses.pop(0) if self.pulses else None
+            self.start = time.perf_counter() + 0.0002
+            self.width = w
+
+    def read(self, pin):
+        assert pin == self.echo
+        if self.width is None or self.start is None:
+            return 0
+        t = time.perf_counter()
+        return 1 if self.start <= t < self.start + self.width else 0
+
+    def close(self):
+        pass
+
+
+def _echo_s(cm):
+    return cm * 2 / 34300
+
+
+def test_sonar_measures_fresh_distance(monkeypatch):
+    monkeypatch.setattr(node_pi.time, "sleep", lambda s: None)
+    g = FakeEchoGpio([_echo_s(15)] * 9)
+    d = node_pi.Sonar(g).read_cm()
+    assert d is not None and abs(d - 15) < 0.5
+
+
+def test_sonar_cold_start_without_echo_is_none_not_zero(monkeypatch):
+    monkeypatch.setattr(node_pi.time, "sleep", lambda s: None)
+    monkeypatch.setattr(node_pi.Sonar, "RISE_TIMEOUT_S", 0.002)
+    assert node_pi.Sonar(FakeEchoGpio([None] * 9)).read_cm() is None
+
+
+def test_sonar_lost_echo_after_good_reading_is_none(monkeypatch):
+    monkeypatch.setattr(node_pi.time, "sleep", lambda s: None)
+    monkeypatch.setattr(node_pi.Sonar, "RISE_TIMEOUT_S", 0.002)
+    s = node_pi.Sonar(FakeEchoGpio([_echo_s(15)] * 9 + [None] * 9))
+    assert abs(s.read_cm() - 15) < 0.5
+    assert s.read_cm() is None  # 不能回傳上一輪的 15 cm
+
+
+def test_sonar_overlong_echo_counts_as_no_echo(monkeypatch):
+    monkeypatch.setattr(node_pi.time, "sleep", lambda s: None)
+    monkeypatch.setattr(node_pi.Sonar, "FALL_TIMEOUT_S", 0.015)
+    # 有些模組沒有回波時會拉高約 38 ms；超過 2 m 的脈寬也不算數
+    assert node_pi.Sonar(FakeEchoGpio([0.03] * 9)).read_cm() is None
+    assert node_pi.Sonar(FakeEchoGpio([_echo_s(250)] * 9)).read_cm() is None
+
+
+def test_node_reports_blocked_after_losing_echo(monkeypatch):
+    monkeypatch.setattr(node_pi.time, "sleep", lambda s: None)
+    monkeypatch.setattr(node_pi.Sonar, "RISE_TIMEOUT_S", 0.002)
+    sonar = node_pi.Sonar(FakeEchoGpio([_echo_s(15)] * 9 + [None] * 27))
+    sent = []
+    node = node_pi.Node("NTNU-01", 30, sonar, poster=lambda p: sent.append(p) or True)
+    for _ in range(4):
+        node.step()
+    assert sent[0]["dist_mm"] == 150 and not sent[0]["blocked"]
+    assert all("dist_mm" not in p for p in sent[1:])   # 沒有新量測就不送距離
+    assert [p["blocked"] for p in sent] == [False, False, False, True]
+
+
+def test_node_cold_start_blocked_still_uploads():
+    sent = []
+    node = node_pi.Node("NTNU-01", 30, StubSonar([None, None, None]),
+                        poster=lambda p: sent.append(p) or True)
+    assert node.step() is None and node.step() is None
+    p = node.step()  # 第 3 輪判定遮擋：一定要通知後端
+    assert p == {"bin_id": "NTNU-01", "blocked": True, "fill_pct": 0.0} and sent == [p]
 
 
 class StubSonar:
