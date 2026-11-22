@@ -199,3 +199,9 @@ def test_mock_drive_runs_demo_scenario(monkeypatch):
     assert made["LED"] and made["Buzzer"]
     assert 80 in servo.history          # 劇本裡的杯子讓實體擋板打開到 --open-angle
     assert servo.history[-1] == 0       # 結束時關閘
+
+
+def test_camera_source_index_or_path():
+    assert gate.camera_source("0") == 0
+    assert gate.camera_source(" 2 ") == 2
+    assert gate.camera_source("/dev/video2") == "/dev/video2"
