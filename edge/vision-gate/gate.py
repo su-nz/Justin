@@ -160,6 +160,12 @@ class IMX500Detector:
         return dets
 
 
+def camera_source(value: str) -> int | str:
+    """--camera：純數字當裝置編號（2 → /dev/video2），其他照原樣交給 OpenCV（裝置路徑、影片檔）。"""
+    value = value.strip()
+    return int(value) if value.isdigit() else value
+
+
 class OnnxDetector:
     """USB 攝影機 + YOLO11 ONNX（輸出 [1, 4+nc, N]）。"""
 
@@ -173,6 +179,8 @@ class OnnxDetector:
         # 沒指定就用模型本身的輸入尺寸（例如 imgsz=320 匯出的模型），動態尺寸才退回 640
         self.imgsz = imgsz or (inp.shape[2] if isinstance(inp.shape[2], int) else 640)
         self.cap = cv2.VideoCapture(cam_index)
+        if not self.cap.isOpened():
+            raise SystemExit(f"打不開攝影機 {cam_index!r}：用 v4l2-ctl --list-devices 確認編號，再用 --camera 指定")
 
     def detect(self):
         import numpy as np
@@ -373,6 +381,8 @@ def main():
     ap.add_argument("--backend", choices=["imx500", "onnx", "mock"], default="imx500")
     ap.add_argument("--model", default="/opt/smartbin/models/network.rpk")
     ap.add_argument("--scenario", help="mock 情境檔")
+    ap.add_argument("--camera", type=camera_source, default=camera_source(os.environ.get("GATE_CAMERA", "0")),
+                    help="onnx 用的攝影機：編號（0 → /dev/video0）或裝置路徑；預設讀環境變數 GATE_CAMERA，沒有就是 0")
     ap.add_argument("--fps", type=float, default=5)
     ap.add_argument("--dry", action="store_true", help="不驅動 GPIO")
     ap.add_argument("--offline", action="store_true", help="不上傳，只印事件")
@@ -388,9 +398,9 @@ def main():
         det = MockDetector(a.scenario)
     elif a.backend == "onnx":
         if a.labels == "coco":
-            det = OnnxDetector(a.model, COCO_NAMES, cfg.conf, imgsz=a.imgsz, remap=coco_to_gate)
+            det = OnnxDetector(a.model, COCO_NAMES, cfg.conf, cam_index=a.camera, imgsz=a.imgsz, remap=coco_to_gate)
         else:
-            det = OnnxDetector(a.model, cfg.labels, cfg.conf, imgsz=a.imgsz)
+            det = OnnxDetector(a.model, cfg.labels, cfg.conf, cam_index=a.camera, imgsz=a.imgsz)
     else:
         det = IMX500Detector(a.model, cfg.labels, cfg.conf)
 

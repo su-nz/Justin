@@ -127,3 +127,9 @@ def test_unknown_coco_object_never_opens_but_big_one_is_rejected():
     big = [("other", .9, (.36, .06, .64, .34))]
     g.step(big, 2); g.step(big, 3)
     assert not act.is_open and up.q.qsize() == 1
+
+
+def test_camera_source_index_or_path():
+    assert gate.camera_source("0") == 0
+    assert gate.camera_source(" 2 ") == 2
+    assert gate.camera_source("/dev/video2") == "/dev/video2"

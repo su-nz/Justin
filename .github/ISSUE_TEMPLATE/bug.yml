@@ -1,0 +1,31 @@
+name: 問題回報
+description: 有東西壞了或行為不對
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: 發生什麼事
+      description: 預期看到什麼、實際看到什麼
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 怎麼重現
+      placeholder: |
+        1.
+        2.
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: 在哪裡發生
+      description: 筆電、Pi 4、Demo 伺服器？哪個 commit 或分支？
+  - type: textarea
+    id: logs
+    attributes:
+      label: 錯誤訊息或 log
+      description: 貼之前先刪掉 token
+      render: text
