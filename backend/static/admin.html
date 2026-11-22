@@ -70,10 +70,14 @@ const map=L.map('map').setView([25.0215,121.5310],15);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
 const binLayer=L.layerGroup().addTo(map), routeLayer=L.layerGroup().addTo(map);
 
+// 每次請求拿一個序號，只畫最新一輪的回應：按「處理」前發出的舊請求晚回來，也不會把警示畫回去
+let binSeq=0, evtSeq=0;
 async function loadBins(){
+  const s=++binSeq;
   const r=await fetch('/api/admin/bins',{headers:H});
   if(!r.ok) return;  // token 錯誤由 loadEvents 提示並重新登入
   const bins=await r.json();
+  if(s!==binSeq) return;
   binLayer.clearLayers();
   if(DEMO&&!focused){
     const f=bins.find(b=>b.id===FOCUS);
@@ -87,9 +91,11 @@ async function loadBins(){
       .bindTooltip(`${esc(b.id)} ${esc(b.name)} ${b.fill_pct??'-'}%${w?`<br>⚠ ${esc(w)}`:''}`).addTo(binLayer)});
 }
 async function loadEvents(){
+  const s=++evtSeq;
   const r=await fetch('/api/events?limit=30',{headers:H});
   if(r.status===401){sessionStorage.removeItem('adm');alert('token 錯誤');location.reload();return}
   const ev=await r.json();
+  if(s!==evtSeq) return;
   document.getElementById('events').innerHTML=ev.length?ev.map(e=>`<tr><td>${new Date(e.ts*1000).toLocaleTimeString()}</td>
     <td>${esc(e.bin_id)}</td><td>${EVT[e.type]||esc(e.type)}</td>
     <td>${e.resolved?'✓':`<button class="ghost" onclick="resolve(${e.id})">處理</button>`}</td></tr>`).join(''):'<tr><td>無</td></tr>';
