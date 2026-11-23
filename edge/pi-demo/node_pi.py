@@ -86,10 +86,16 @@ class BlockDetector:
         self.consecutive = consecutive
         self.min_cm = min_cm
         self.count = 0
+        self.reason: str | None = None  # 最近一次可疑的原因：no_echo | too_close（#53）
 
     def update(self, dist_cm: float | None) -> bool:
-        suspicious = dist_cm is None or dist_cm < self.min_cm
-        self.count = self.count + 1 if suspicious else 0
+        if dist_cm is None:
+            self.reason = "no_echo"
+        elif dist_cm < self.min_cm:
+            self.reason = "too_close"
+        else:
+            self.reason = None
+        self.count = self.count + 1 if self.reason else 0
         return self.count >= self.consecutive
 
 
@@ -345,14 +351,17 @@ class FakeScale:
 class Lcd:
     def __init__(self, addr: int = LCD_ADDR, enabled: bool = True):
         self.dev = None
+        self.state, self.error = "disabled", None   # 元件狀態（#53）：disabled | unavailable | ok | error
         if not enabled:
             return
         try:
             from RPLCD.i2c import CharLCD
             self.dev = CharLCD("PCF8574", addr, cols=LCD_COLS, rows=2)
             self.dev.clear()
+            self.state = "ok"
         except Exception as e:  # 沒裝 RPLCD、沒開 I²C、LCD 沒接都不影響上傳
             log.warning("LCD 無法使用（%s），只寫 log", e)
+            self.state, self.error = "unavailable", str(e)[:120]
 
     def show(self, line1: str, line2: str) -> None:
         log.info("LCD | %-16s | %-16s |", line1, line2)
@@ -363,8 +372,10 @@ class Lcd:
             self.dev.write_string(line1.ljust(LCD_COLS))
             self.dev.cursor_pos = (1, 0)
             self.dev.write_string(line2.ljust(LCD_COLS))
+            self.state, self.error = "ok", None
         except Exception as e:
             log.warning("LCD 寫入失敗：%s", e)
+            self.state, self.error = "error", str(e)[:120]
 
     def close(self) -> None:
         if self.dev is not None:
@@ -372,6 +383,22 @@ class Lcd:
                 self.dev.close(clear=False)
             except Exception:
                 pass
+
+
+STATUS_HEARTBEAT_S = 10.0  # 狀態沒變也每 10 秒報一次，調度台才知道還活著
+
+
+def post_status(api: str, token: str, bin_id: str, components: dict) -> bool:
+    """元件狀態上報（#53）；失敗只記 debug，不影響量測。"""
+    import httpx
+    try:
+        r = httpx.post(f"{api.rstrip('/')}/api/device/status", timeout=5,
+                       json={"bin_id": bin_id, "source": "node", "components": components},
+                       headers={"X-Device-Token": token})
+        return r.status_code < 300
+    except httpx.HTTPError as e:
+        log.debug("狀態上報失敗：%s", e)
+        return False
 
 
 def post_telemetry(api: str, token: str, payload: dict) -> bool:
@@ -426,7 +453,8 @@ class Node:
     def __init__(self, bin_id: str, depth_cm: float, sonar, scale=None,
                  hx_scale: float | None = None, hx_offset: float | None = None,
                  lcd: Lcd | None = None, poster=None, gate_status_file: str = "",
-                 commands: CommandClient | None = None, zero_band_g: float = ZERO_BAND_G):
+                 commands: CommandClient | None = None, zero_band_g: float = ZERO_BAND_G,
+                 status_poster=None, scale_note: str | None = None):
         self.bin_id = bin_id
         self.depth_cm = depth_cm
         self.sonar = sonar
@@ -442,6 +470,13 @@ class Node:
         self._lcd_lines: tuple[str, str] | None = None
         self.commands = commands
         self.zero_band_g = max(zero_band_g, 0.0)
+        # 元件狀態（#53）
+        self.status_poster = status_poster
+        self.scale_note = scale_note        # 沒有秤時的原因：disabled | not_calibrated | init_failed
+        self.scale_state = "ok" if scale is not None else (scale_note or "disabled")
+        self.sonar_error: str | None = None
+        self._status_key = None
+        self._status_at = 0.0
         self.lcd_text: tuple[str, str] | None = None   # 遠端自訂文字
         self.lcd_text_until = 0.0
 
@@ -468,10 +503,13 @@ class Node:
             raw = self.scale.read_median()
         except Exception as e:
             log.warning("HX711 讀取錯誤：%s", e)
+            self.scale_state = "error"
             return None
         if raw is None:
             log.warning("HX711 沒有回應（逾時），這輪不送 weight_g")
+            self.scale_state = "timeout"
             return None
+        self.scale_state = "ok"
         grams = (raw - self.hx_offset) / self.hx_scale
         return 0.0 if abs(grams) < self.zero_band_g else grams
 
@@ -479,9 +517,11 @@ class Node:
         """量一輪、更新 LCD、上傳。回傳送出的 payload；沒東西可送時回傳 None。"""
         try:
             dist = self.sonar.read_cm()
+            self.sonar_error = None
         except Exception as e:
             log.warning("超音波讀取錯誤：%s", e)
             dist = None
+            self.sonar_error = str(e)[:120]
         blocked = self.blocks.update(dist)
         if dist is not None:
             self.last_fill = fill_from_distance(dist, self.depth_cm)
@@ -489,6 +529,7 @@ class Node:
         weight = self.read_weight()  # 超音波遮擋時照樣量重量
 
         self._reading = (fill, weight, blocked)
+        self.report_status(dist, weight, blocked)
         self._lcd_lines = None  # 每輪都重寫一次，LCD 接觸不良後也能恢復
         self.refresh_lcd()
 
@@ -508,6 +549,36 @@ class Node:
         if self.poster is not None and self.poster(payload):
             log.info("已上傳 %s", payload)
         return payload
+
+    def components(self, dist: float | None, weight: float | None, blocked: bool) -> dict:
+        b = self.blocks
+        sonar_state = "error" if self.sonar_error else (b.reason or "ok")
+        return {
+            "sonar": {"state": sonar_state, "dist_cm": None if dist is None else round(dist, 1),
+                      "streak": b.count, "need": b.consecutive, "blocked": bool(blocked),
+                      "min_cm": b.min_cm, "error": self.sonar_error},
+            "scale": {"state": self.scale_state,
+                      "weight_g": None if weight is None else round(weight, 1)},
+            "lcd": {"state": self.lcd.state if self.lcd is not None else "disabled",
+                    "error": getattr(self.lcd, "error", None)},
+            "node": {"depth_cm": self.depth_cm},
+        }
+
+    def report_status(self, dist, weight, blocked, now: float | None = None) -> None:
+        """狀態有變（或每 10 秒）才上報，不要每輪都多打一次 API。"""
+        if self.status_poster is None:
+            return
+        now = now or time.monotonic()
+        comp = self.components(dist, weight, blocked)
+        key = (comp["sonar"]["state"], comp["sonar"]["streak"] if comp["sonar"]["state"] != "ok" else 0,
+               blocked, comp["scale"]["state"], comp["lcd"]["state"])
+        if key == self._status_key and now - self._status_at < STATUS_HEARTBEAT_S:
+            return
+        self._status_key, self._status_at = key, now
+        try:
+            self.status_poster(comp)
+        except Exception:
+            log.exception("狀態上報失敗")
 
     def handle_command(self, cmd: str, args: dict, now: float | None = None) -> tuple[bool, str]:
         now = now or time.time()
@@ -684,6 +755,7 @@ def main(argv=None) -> int:
     sonar_n, hx_n = sample_counts(a)
     sonar = FakeSonar(a.depth_cm) if a.dry else Sonar(gpio, samples=sonar_n)
     scale = None
+    scale_note = "disabled"
     hx_scale, hx_offset = a.hx_scale, a.hx_offset
     if a.dry and not a.no_scale:
         scale, hx_scale, hx_offset = FakeScale(sonar), 1.0, 0.0
@@ -691,18 +763,21 @@ def main(argv=None) -> int:
         if hx_scale is None or hx_offset is None or math.isclose(hx_scale, 0.0):
             log.warning("沒有設定 HX711_SCALE / HX711_OFFSET，先用 --tare、--calibrate 校正；"
                         "這次不送 weight_g")
+            scale_note = "not_calibrated"
         else:
             try:
                 scale = HX711(gpio, a.hx_dt, a.hx_sck, samples=hx_n)
             except Exception as e:
                 log.warning("HX711 初始化失敗（%s），這次不送 weight_g", e)
+                scale_note = "init_failed"
     lcd = Lcd(a.lcd_addr, enabled=not (a.dry or a.no_lcd))
 
     node = Node(a.bin, a.depth_cm, sonar, scale, hx_scale, hx_offset, lcd,
                 poster=lambda p: post_telemetry(a.api, a.token, p),
                 gate_status_file="" if a.dry else GATE_STATUS_FILE,
                 commands=CommandClient(a.api, a.token, a.bin) if a.token else None,
-                zero_band_g=a.zero_band_g)
+                zero_band_g=a.zero_band_g, scale_note=scale_note,
+                status_poster=(lambda comp: post_status(a.api, a.token, a.bin, comp)) if a.token else None)
     log.info("開始：bin=%s api=%s 桶深=%.1f cm 間隔=%.0f s 秤重=%s%s", a.bin, a.api, a.depth_cm,
              a.interval, "開" if scale else "關", "（dry）" if a.dry else "")
     try:

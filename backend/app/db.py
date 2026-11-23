@@ -51,6 +51,13 @@ CREATE TABLE IF NOT EXISTS commands (
     updated_at  REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_cmd_bin ON commands(bin_id, status);
+CREATE TABLE IF NOT EXISTS device_status (
+    bin_id      TEXT NOT NULL REFERENCES bins(id),
+    source      TEXT NOT NULL,          -- node | gate
+    ts          REAL NOT NULL,
+    data        TEXT NOT NULL,          -- 元件狀態 JSON（#53；不含影像）
+    PRIMARY KEY (bin_id, source)
+);
 CREATE TABLE IF NOT EXISTS dispatch_plans (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at  REAL NOT NULL,

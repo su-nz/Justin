@@ -117,6 +117,23 @@
   .cmds div{display:flex;gap:6px;align-items:baseline}
   .cmds .st{font-weight:600;white-space:nowrap}
   .cmds .rs{color:var(--muted);flex:1;min-width:0}
+  /* 元件狀態（#53） */
+  .dev{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-top:8px}
+  .tile{border-radius:10px;padding:8px 10px;background:var(--soft);border-left:4px solid var(--k)}
+  .tile .h{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+  .tile .h i{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block}
+  .tile b{display:block;font-size:14px;margin-top:2px}
+  .tile small{display:block;font-size:12px;color:var(--muted);margin-top:2px;line-height:1.35}
+  .tile.ok{border-left-color:var(--g)} .tile.ok .h{color:var(--g)}
+  .tile.warn{border-left-color:var(--y)} .tile.warn .h{color:var(--y)}
+  .tile.bad{border-left-color:var(--r)} .tile.bad .h{color:var(--r)}
+  .tile.off{border-left-color:var(--k)} .tile.off .h{color:var(--k)}
+  .vision{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;margin-top:10px;align-items:start}
+  @media(max-width:520px){.vision{grid-template-columns:1fr}}
+  .vision svg{width:100%;aspect-ratio:4/3;background:#0f172a;border-radius:10px;display:block}
+  .vision ul{margin:0;padding:0;list-style:none;font-size:13px;display:grid;gap:4px}
+  .vision li{display:flex;justify-content:space-between;gap:8px;background:var(--soft);border-radius:8px;padding:5px 8px}
 </style>
 </head>
 <body>
@@ -153,6 +170,15 @@
           <div class="seg" id="range"><button data-h="0.16666667">10 分鐘</button><button data-h="1">1 小時</button><button data-h="6">6 小時</button><button data-h="24">24 小時</button></div>
         </div>
         <div id="hist-wrap"><canvas id="hist"></canvas></div>
+        <div class="dev">
+          <h2 style="font-size:13px">元件狀態 <small id="dev-age"></small></h2>
+          <div class="tiles" id="tiles"></div>
+          <div class="vision">
+            <div><svg id="vis" viewBox="0 0 400 300" role="img" aria-label="相機辨識示意圖（非影像）"></svg>
+              <p class="note">相機辨識示意圖：只顯示辨識結果，不傳影像</p></div>
+            <div><h2 style="font-size:13px;margin-bottom:6px">相機最後看到 <small id="vis-age"></small></h2><ul id="vis-list"></ul></div>
+          </div>
+        </div>
         <div class="ctl" id="ctl">
           <h2 style="font-size:13px">遠端控制 <small>指令約 2 秒內送達 Pi</small></h2>
           <div class="row"><span>擋板</span>
@@ -297,7 +323,7 @@ function selectBin(id){
   histBin=id;
   document.querySelectorAll('.bin[data-id]').forEach(el=>el.classList.toggle('sel',el.dataset.id===id));
   const b=binsById[id]; if(b) map.panTo([b.lat,b.lng]);
-  renderFocus(); loadHistory(); loadCommands();
+  renderFocus(); loadHistory(); loadCommands(); loadStatus();
   if(innerWidth<960) document.getElementById('focus').scrollIntoView({behavior:'smooth',block:'start'});
 }
 function renderFocus(){
@@ -372,6 +398,72 @@ async function loadHistory(signal){
   drawHistory(rows);
 }
 
+// ---- 元件狀態（#53）
+const STALE_S=30;
+const OBJ={cup:'杯子',bottle:'瓶子',can:'鋁罐',paper:'紙',lunchbox:'便當盒',garbage_bag:'垃圾袋',hand:'手／人',litter:'垃圾',other:'其他物品'};
+const tile=(cls,title,main,sub)=>`<div class="tile ${cls}"><div class="h"><i></i>${title}</div><b>${main}</b>${sub?`<small>${sub}</small>`:''}</div>`;
+const agoS=t=>t==null?'-':ago(t);
+function renderStatus(st){
+  const now=st.now, node=st.node, gate=st.gate, t=[];
+  const nStale=!node||now-node.ts>STALE_S, gStale=!gate||now-gate.ts>STALE_S;
+  document.getElementById('dev-age').textContent=`感測 ${node?agoS(node.ts):'未回報'}・閘門 ${gate?agoS(gate.ts):'未回報'}`;
+  if(nStale){
+    t.push(tile('off','感測節點','未回報',node?`最後回報 ${agoS(node.ts)}，檢查 smartbin-node 服務`:'還沒收到狀態（需要新版 node_pi.py）'));
+  }else{
+    const c=node.components, so=c.sonar||{}, sc=c.scale||{}, lc=c.lcd||{};
+    const prog=`連續 ${so.streak}/${so.need} 輪${so.blocked?'，已判定遮擋':''}`;
+    t.push(so.state==='ok'?tile('ok','超音波','正常',`距離 ${so.dist_cm} cm`)
+      :so.state==='too_close'?tile(so.blocked?'bad':'warn','超音波','距離太近',`${so.dist_cm??'-'} cm < ${so.min_cm} cm，可能有東西貼住感測器；${prog}`)
+      :so.state==='no_echo'?tile(so.blocked?'bad':'warn','超音波','收不到回波',`太遠、斜面吸音或感測器被蓋住；${prog}`)
+      :tile('bad','超音波','讀取錯誤',esc(so.error||'')));
+    const SC={ok:['ok','正常',sc.weight_g==null?'':`${(sc.weight_g/1000).toFixed(2)} kg`],timeout:['bad','沒有回應','HX711 逾時：檢查 VCC 3.3V、DT=GPIO22、SCK=GPIO27'],
+      error:['bad','讀取錯誤',''],not_calibrated:['warn','未校正','缺 HX711_SCALE／HX711_OFFSET'],init_failed:['bad','初始化失敗','檢查接線'],disabled:['off','未啟用','以 --no-scale 執行']};
+    const [k1,m1,s1]=SC[sc.state]||['off',esc(sc.state),''];
+    t.push(tile(k1,'秤重',m1,s1));
+    const LC={ok:['ok','正常',''],error:['bad','寫入失敗',esc(lc.error||'')],unavailable:['bad','無法使用',esc(lc.error||'檢查 I²C 位址')],disabled:['off','未啟用','']};
+    const [k2,m2,s2]=LC[lc.state]||['off',esc(lc.state),''];
+    t.push(tile(k2,'LCD',m2,s2));
+  }
+  let g=null;
+  if(gStale){
+    t.push(tile('off','視覺閘門','未回報',gate?`最後回報 ${agoS(gate.ts)}，檢查 smartbin-gate-demo 服務`:'還沒收到狀態（需要新版 gate.py）'));
+  }else{
+    g=gate.components; const cam=g.camera||{}, gt=g.gate||{};
+    t.push(tile(g.mode==='mock'?'warn':'ok','閘門模式',g.mode==='mock'?'劇本':g.mode==='onnx'?'相機即時辨識':esc(g.mode),g.mode==='mock'?'預錄的偵測結果，不是真的相機':'USB 相機＋YOLO'));
+    t.push(cam.state==='scenario'?tile('off','相機','未使用','劇本模式不開相機')
+      :cam.state==='ok'?tile(cam.fps>=3?'ok':'warn','相機',`${cam.fps} FPS`,`有效影格 ${cam.valid}/${cam.attempts}・辨識 ${cam.detect_ms} ms`)
+      :cam.state==='no_frames'?tile('bad','相機','讀不到畫面','檢查 USB 連接與 /dev/video0')
+      :tile('warn','相機','啟動中','約 20 張畫面後顯示 FPS'));
+    t.push(tile(gt.bin_full_lock?'bad':'ok','擋板',gt.open?'開啟':'關閉',
+      [gt.bin_full_lock?'桶滿，已鎖定不收':'',gt.last_reject_ts?`最後拒收 ${agoS(gt.last_reject_ts)}`:''].filter(Boolean).join('・')));
+  }
+  document.getElementById('tiles').innerHTML=t.join('');
+  renderVision(g);
+}
+function renderVision(g){
+  const svg=document.getElementById('vis'), list=document.getElementById('vis-list'), age=document.getElementById('vis-age');
+  const R=(b,stroke,dash,fill)=>`<rect x="${b[0]*400}" y="${b[1]*300}" width="${(b[2]-b[0])*400}" height="${(b[3]-b[1])*300}" fill="${fill||'none'}" stroke="${stroke}" stroke-width="2" ${dash?'stroke-dasharray="6 4"':''} rx="3"/>`;
+  if(!g){svg.innerHTML='<text x="200" y="155" fill="#94a3b8" font-size="14" text-anchor="middle">閘門未回報</text>';list.innerHTML='';age.textContent='';return}
+  const d=g.detections||{}, items=d.items||[];
+  const col=c=>c==='garbage_bag'||c==='other'?'#f87171':c==='hand'?'#fbbf24':'#4ade80';
+  let h='';
+  if(d.ground_roi) h+=R(d.ground_roi,'#64748b',true,'rgba(100,116,139,.12)')+`<text x="${d.ground_roi[0]*400+6}" y="${d.ground_roi[3]*300-6}" fill="#94a3b8" font-size="12">地面</text>`;
+  if(d.slot_roi) h+=R(d.slot_roi,'#38bdf8',true,'rgba(56,189,248,.1)')+`<text x="${d.slot_roi[0]*400+4}" y="${d.slot_roi[1]*300+14}" fill="#7dd3fc" font-size="12">投入口</text>`;
+  items.forEach(it=>{const b=it.box;h+=R(b,col(it.cls))+
+    `<text x="${b[0]*400+3}" y="${Math.max(b[1]*300-4,12)}" fill="${col(it.cls)}" font-size="12" font-weight="700">${esc(OBJ[it.cls]||it.cls)} ${Math.round(it.conf*100)}%</text>`});
+  svg.innerHTML=h;
+  age.textContent=d.ts?agoS(d.ts):'';
+  list.innerHTML=items.length?items.map(it=>`<li><span style="color:${col(it.cls)};filter:brightness(.8)">●</span><span style="flex:1">${esc(OBJ[it.cls]||it.cls)}</span><b>${Math.round(it.conf*100)}%</b></li>`).join('')
+    :`<li><span style="color:var(--muted)">${g.mode==='mock'?'劇本還沒播到物品':'還沒辨識到物品'}</span></li>`;
+}
+async function loadStatus(signal){
+  if(!histBin) return;
+  const r=await fetch(`/api/bins/${encodeURIComponent(histBin)}/status`,{headers:H,signal});
+  if(!r.ok||signal?.aborted) return;
+  const st=await r.json();
+  if(!signal?.aborted) renderStatus(st);
+}
+
 // ---- 遠端控制（#41）
 const CMD={gate_open:'開門',gate_close:'關門',gate_reject:'測試拒收',gate_mode:'切換模式',lcd_text:'LCD 文字',measure_now:'立即量測',tare:'秤重歸零'};
 const CST={pending:['等待 Pi','#c98a00'],sent:['執行中','#2563eb'],done:['完成','#1f6f4a'],failed:['失敗','#c0392b'],expired:['逾時（Pi 沒回應）','#6b7280']};
@@ -422,6 +514,7 @@ async function refresh(){
   if(b.value){renderKpis(b.value, e.value??0); renderFocus(); lastOk=Date.now()}
   if(!controller.signal.aborted) await loadHistory(controller.signal).catch(()=>{});
   if(!controller.signal.aborted) await loadCommands(controller.signal).catch(()=>{});
+  if(!controller.signal.aborted) await loadStatus(controller.signal).catch(()=>{});
   clearTimeout(timeout);
   if(poll===controller) poll=null;
   nextAt=Date.now()+PERIOD;  // 從更新完成開始倒數

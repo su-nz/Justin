@@ -107,6 +107,15 @@ class CommandResultIn(BaseModel):
     result: dict | str | None = None
 
 
+STATUS_MAX_BYTES = 8192  # 元件狀態只有文字與座標，不收影像（#53）
+
+
+class DeviceStatusIn(BaseModel):
+    bin_id: str
+    source: str = Field(pattern="^(node|gate)$")
+    components: dict
+
+
 class PlanIn(BaseModel):
     vehicles: int = Field(1, ge=1, le=10)
     vehicle_capacity_l: int = Field(2000, ge=100)
@@ -264,7 +273,33 @@ def device_command_result(cid: int, body: CommandResultIn, bin_id: str, x_device
         raise HTTPException(404, "unknown command")
 
 
+@app.post("/api/device/status", status_code=204)
+def device_status(st: DeviceStatusIn, x_device_token: str = Header("")):
+    """裝置上報各元件狀態（只存最新一筆）。"""
+    device_auth(st.bin_id, x_device_token)
+    data = json.dumps(st.components, ensure_ascii=False)
+    if len(data.encode()) > STATUS_MAX_BYTES:
+        raise HTTPException(413, f"status larger than {STATUS_MAX_BYTES} bytes")
+    with db.conn() as c:
+        c.execute("INSERT INTO device_status(bin_id,source,ts,data) VALUES(?,?,?,?) "
+                  "ON CONFLICT(bin_id,source) DO UPDATE SET ts=excluded.ts, data=excluded.data",
+                  (st.bin_id, st.source, time.time(), data))
+
+
 # ---------------------------------------------------------------- routes: admin
+@app.get("/api/bins/{bin_id}/status", dependencies=[Depends(require_admin)])
+def bin_status(bin_id: str):
+    """調度台：各元件最新狀態，含伺服器收到的時間 ts（前端據此判斷「未回報」）。"""
+    with db.conn() as c:
+        if not c.execute("SELECT 1 FROM bins WHERE id=?", (bin_id,)).fetchone():
+            raise HTTPException(404, "unknown bin")
+        rows = c.execute("SELECT source, ts, data FROM device_status WHERE bin_id=?", (bin_id,)).fetchall()
+    out = {"now": time.time(), "node": None, "gate": None}
+    for r in rows:
+        out[r["source"]] = {"ts": r["ts"], "components": json.loads(r["data"])}
+    return out
+
+
 @app.post("/api/bins/{bin_id}/commands", dependencies=[Depends(require_admin)])
 def create_command(bin_id: str, body: CommandIn):
     target = COMMANDS.get(body.cmd)
