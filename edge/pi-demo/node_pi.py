@@ -37,7 +37,9 @@ SONAR_MAX_M = 2.0
 SONAR_SAMPLES = 9          # 每輪量 9 次取中位數
 HX_DT = 22
 HX_SCK = 27
-HX_SAMPLES = 15            # 每輪讀 15 筆取中位數
+HX_SAMPLES = 15            # 每輪讀 15 筆取中位數（HX711 每秒 10 筆 → 約 1.5 秒）
+FAST_SONAR_SAMPLES = 5     # --fast：每輪約 0.6 秒，LCD／網站接近每秒更新（#43）
+FAST_HX_SAMPLES = 4
 HX_TARE_SAMPLES = 30
 HX_TIMEOUT_S = 1.0         # HX711 10 SPS，1 秒內一定要有資料，否則視為沒接
 BLOCK_DIST_CM = 2.5        # 和韌體 BLOCK_DIST_MM 一致
@@ -222,8 +224,9 @@ class Sonar:
     FALL_TIMEOUT_S = 0.025    # 沒回波時有些模組會拉高約 38 ms，超過就算量不到
 
     def __init__(self, gpio, trig: int = SONAR_TRIG, echo: int = SONAR_ECHO,
-                 max_cm: float = SONAR_MAX_M * 100):
+                 max_cm: float = SONAR_MAX_M * 100, samples: int = SONAR_SAMPLES):
         self.gpio, self.trig, self.echo, self.max_cm = gpio, trig, echo, max_cm
+        self.samples = max(samples, 3)  # 至少 3 筆才取中位數
         gpio.output(trig, 0)
         gpio.input(echo)  # Echo 經分壓接進來，電位是確定的，不用上拉
 
@@ -245,7 +248,7 @@ class Sonar:
 
     def read_cm(self) -> float | None:
         vals = []
-        for i in range(SONAR_SAMPLES):
+        for i in range(self.samples):
             if i:
                 time.sleep(0.06)  # HC-SR04 建議兩次量測間隔 > 60 ms
             d = self.ping_cm()
@@ -260,8 +263,9 @@ class Sonar:
 class HX711:
     """軟體模擬 HX711 時序，A 通道、增益 128。"""
 
-    def __init__(self, gpio, dt: int = HX_DT, sck: int = HX_SCK):
+    def __init__(self, gpio, dt: int = HX_DT, sck: int = HX_SCK, samples: int = HX_SAMPLES):
         self.gpio, self.dt, self.sck = gpio, dt, sck
+        self.samples = max(samples, 3)
         gpio.output(sck, 0)
         # 上拉：DT 線沒接時讀到高電位 → 逾時，而不是讀到浮接的亂數
         gpio.input(dt, pull_up=True)
@@ -292,7 +296,8 @@ class HX711:
             return None
         return raw
 
-    def read_median(self, n: int = HX_SAMPLES) -> float | None:
+    def read_median(self, n: int | None = None) -> float | None:
+        n = n or self.samples
         vals = []
         for _ in range(n):
             r = self.read_raw()
@@ -519,7 +524,7 @@ class Node:
         if cmd == "tare":
             if self.scale is None or self.hx_scale is None:
                 return False, "沒有接秤或還沒校正"
-            raw = self.scale.read_median()
+            raw = self.scale.read_median(HX_SAMPLES)  # 歸零要準，用完整取樣數
             if raw is None:
                 return False, "HX711 沒有回應"
             self.hx_offset = raw
@@ -592,6 +597,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--tare", action="store_true", help="量空桶，印出 offset 後結束")
     ap.add_argument("--calibrate", type=float, metavar="GRAMS",
                     help="放已知重量（克），印出 scale 後結束")
+    ap.add_argument("--sonar-samples", type=int, default=None, help=f"每輪超音波取樣數（預設 {SONAR_SAMPLES}）")
+    ap.add_argument("--hx-samples", type=int, default=None, help=f"每輪 HX711 取樣數（預設 {HX_SAMPLES}）")
+    ap.add_argument("--fast", action="store_true",
+                    help=f"快速模式：超音波 {FAST_SONAR_SAMPLES} 筆、HX711 {FAST_HX_SAMPLES} 筆，每輪約 0.6 秒；搭配 --interval 1")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args(argv)
     if a.hx_scale is None:
@@ -601,6 +610,13 @@ def parse_args(argv=None) -> argparse.Namespace:
     if a.depth_cm <= 0:
         ap.error("--depth-cm 必須大於 0")
     return a
+
+
+def sample_counts(a: argparse.Namespace) -> tuple[int, int]:
+    """(超音波, HX711) 每輪取樣數：明確指定 > --fast > 預設。"""
+    sonar = a.sonar_samples or (FAST_SONAR_SAMPLES if a.fast else SONAR_SAMPLES)
+    hx = a.hx_samples or (FAST_HX_SAMPLES if a.fast else HX_SAMPLES)
+    return sonar, hx
 
 
 def _make_scale(a: argparse.Namespace, sonar, gpio):
@@ -657,7 +673,8 @@ def main(argv=None) -> int:
         log.warning("沒有 DEVICE_TOKEN，後端會回 401")
 
     gpio = None if a.dry else open_gpio()
-    sonar = FakeSonar(a.depth_cm) if a.dry else Sonar(gpio)
+    sonar_n, hx_n = sample_counts(a)
+    sonar = FakeSonar(a.depth_cm) if a.dry else Sonar(gpio, samples=sonar_n)
     scale = None
     hx_scale, hx_offset = a.hx_scale, a.hx_offset
     if a.dry and not a.no_scale:
@@ -668,7 +685,7 @@ def main(argv=None) -> int:
                         "這次不送 weight_g")
         else:
             try:
-                scale = HX711(gpio, a.hx_dt, a.hx_sck)
+                scale = HX711(gpio, a.hx_dt, a.hx_sck, samples=hx_n)
             except Exception as e:
                 log.warning("HX711 初始化失敗（%s），這次不送 weight_g", e)
     lcd = Lcd(a.lcd_addr, enabled=not (a.dry or a.no_lcd))

@@ -569,3 +569,13 @@ def test_gate_handles_remote_commands(tmp_path):
     g.handle_command("gate_open", {}, 200.0)
     g.handle_command("gate_close", {}, 201.0)
     assert not act.is_open
+
+
+def test_gate_lowers_its_priority(monkeypatch):
+    seen = []
+    monkeypatch.setattr(gate.os, "nice", lambda n: seen.append(n), raising=False)
+    monkeypatch.setenv("GATE_NICE", "10")
+    gate.lower_priority()
+    monkeypatch.setenv("GATE_NICE", "0")
+    gate.lower_priority()
+    assert seen == [10]

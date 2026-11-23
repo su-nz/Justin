@@ -343,3 +343,30 @@ def test_node_remote_commands():
 def test_split_lcd_text():
     assert node_pi.split_lcd_text("a\nb") == ("a", "b")
     assert node_pi.split_lcd_text("x" * 40) == ("x" * 16, "x" * 16)
+
+
+def test_sample_counts_fast_and_override():
+    a = node_pi.parse_args([])
+    assert node_pi.sample_counts(a) == (node_pi.SONAR_SAMPLES, node_pi.HX_SAMPLES)
+    assert node_pi.sample_counts(node_pi.parse_args(["--fast"])) == (5, 4)
+    assert node_pi.sample_counts(node_pi.parse_args(["--fast", "--hx-samples", "7"])) == (5, 7)
+
+
+def test_hx711_uses_configured_sample_count(monkeypatch):
+    hx = node_pi.HX711.__new__(node_pi.HX711)
+    hx.samples = 4
+    calls = []
+    monkeypatch.setattr(hx, "read_raw", lambda: calls.append(1) or 100, raising=False)
+    assert hx.read_median() == 100 and len(calls) == 4
+    calls.clear()
+    hx.read_median(15)
+    assert len(calls) == 15
+
+
+def test_sonar_uses_configured_sample_count(monkeypatch):
+    s = node_pi.Sonar.__new__(node_pi.Sonar)
+    s.samples = 5
+    pings = []
+    monkeypatch.setattr(s, "ping_cm", lambda: pings.append(1) or 20.0, raising=False)
+    monkeypatch.setattr(node_pi.time, "sleep", lambda _: None)
+    assert s.read_cm() == 20.0 and len(pings) == 5

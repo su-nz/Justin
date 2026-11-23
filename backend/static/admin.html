@@ -212,8 +212,9 @@ document.getElementById('logout').onclick=()=>{sessionStorage.removeItem('adm');
 const H={'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 // ?demo=1：現場 Demo 用，每 5 秒更新並把地圖移到 NTNU-01（?bin= 可換桶）；平常 30 秒
-const Q=new URLSearchParams(location.search), DEMO=Q.get('demo')==='1', FOCUS=Q.get('bin')||'NTNU-01';
-const PERIOD=DEMO?5000:30000;
+const Q=new URLSearchParams(location.search), DEMO=Q.get('demo')==='1'||Q.get('live')==='1', FOCUS=Q.get('bin')||'NTNU-01';
+const LIVE=Q.get('live')==='1';
+const PERIOD=LIVE?1000:DEMO?5000:30000;  // ?live=1：每秒更新（#43）
 let focused=false;
 const ago=t=>{if(t==null)return'-';const s=Math.max(0,Date.now()/1000-t);
   return s<60?`${Math.round(s)} 秒前`:s<3600?`${Math.floor(s/60)} 分前`:new Date(t*1000).toLocaleString()};

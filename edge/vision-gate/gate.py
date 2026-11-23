@@ -191,7 +191,12 @@ class OnnxDetector:
         import cv2
         import onnxruntime as ort
         self.cv2, self.labels, self.conf, self.remap = cv2, labels, conf, remap
-        self.sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        # 不限制的話 onnxruntime 會吃光 Pi 4 全部核心，node_pi.py 量超音波／HX711 的時序就會錯過（#43）
+        threads = int(os.environ.get("GATE_ORT_THREADS", "2"))
+        so = ort.SessionOptions()
+        so.intra_op_num_threads, so.inter_op_num_threads = threads, 1
+        cv2.setNumThreads(1)
+        self.sess = ort.InferenceSession(model_path, sess_options=so, providers=["CPUExecutionProvider"])
         inp = self.sess.get_inputs()[0]
         self.inp = inp.name
         # 沒指定就用模型本身的輸入尺寸（例如 imgsz=320 匯出的模型），動態尺寸才退回 640
@@ -521,6 +526,16 @@ def actuators_dry(a) -> bool:
     return a.dry or (a.backend == "mock" and not a.drive)
 
 
+def lower_priority() -> None:
+    """閘門讓感測程式先跑：視覺推論慢一點沒關係，量測時序錯過就沒有資料（#43）。"""
+    inc = int(os.environ.get("GATE_NICE", "10"))
+    if inc > 0:
+        try:
+            os.nice(inc)
+        except (OSError, AttributeError) as e:
+            log.debug("無法調整優先權：%s", e)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--backend", choices=["imx500", "onnx", "mock"], default="imx500")
@@ -564,6 +579,7 @@ def main(argv=None):
     else:
         det = IMX500Detector(a.model, cfg.labels, cfg.conf)
 
+    lower_priority()
     act = Actuators(cfg, dry=actuators_dry(a))
     up = Uploader(cfg, offline=a.offline)
     up.start()
