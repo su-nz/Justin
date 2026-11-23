@@ -6,6 +6,9 @@ Wants=network-online.target
 [Service]
 EnvironmentFile=/etc/smartbin/gate.env
 ExecStart=/usr/bin/python3 /opt/smartbin/gate.py --backend imx500 --model /opt/smartbin/models/network.rpk
+# lgpio（gpiozero 在 Pi 4/5 的預設後端）會在目前目錄建立通知管線，systemd 預設目錄是 / 不能寫
+WorkingDirectory=/var/lib/smartbin
+SupplementaryGroups=gpio
 Restart=always
 RestartSec=5
 User=smartbin
