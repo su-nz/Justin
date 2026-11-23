@@ -22,18 +22,34 @@
   .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:-1px}
   .bar{height:6px;background:#eee;border-radius:3px;overflow:hidden;margin:8px 0 2px}
   .bar>i{display:block;height:100%}
+  .brand{position:fixed;top:max(12px,env(safe-area-inset-top));left:12px;z-index:1000;display:flex;align-items:center;gap:8px;
+    background:rgba(255,255,255,.95);border-radius:999px;padding:6px 12px 6px 8px;box-shadow:0 2px 10px rgba(0,0,0,.15);font-size:13px;font-weight:600}
+  .brand img{width:22px;height:22px}
+  .brand span{color:#555;font-weight:400}
+  .count{font-size:13px;color:#555;margin-top:6px}
+  .count b{color:var(--g)}
+  .legend small{flex-basis:100%;color:#888}
+  .leaflet-popup-content{margin:10px 12px;font-size:13px;min-width:150px}
+  /* 桌機：卡片靠左上，不擋地圖中間 */
+  @media(min-width:900px){
+    .sheet{left:16px;right:auto;top:72px;bottom:auto;width:360px;margin:0}
+  }
 </style>
 </head>
 <body>
 <div id="map"></div>
+<div class="brand"><img src="/static/icon.svg" alt="">Smart Bin<span id="upd">・載入中</span></div>
 <div class="sheet" id="sheet">
   <h1>手上有垃圾？</h1>
   <p id="msg">幫你找最近、還有空位的公共垃圾桶。</p>
+  <p class="count" id="count"></p>
   <div id="detail"></div>
   <button class="go" id="go">找最近有空位的垃圾桶</button>
   <div class="legend">
     <span><i class="dot" style="background:var(--g)"></i>有空位</span>
     <span><i class="dot" style="background:var(--y)"></i>快滿</span>
+    <span><i class="dot" style="background:#2563eb"></i>你的位置</span>
+    <small>已滿、維護中的桶不會顯示，避免白跑一趟</small>
   </div>
   <p style="text-align:center;font-size:12px;margin:8px 0 0"><a href="/static/flow.html" style="color:#666">系統怎麼運作？</a></p>
 </div>
@@ -66,12 +82,18 @@ async function loadBins(){
     const f=bins.find(b=>b.id===FOCUS);
     if(f){map.setView([f.lat,f.lng],17);focused=true}
   }
-  for(const b of bins){
-    if(!(b.state in COLORS)) continue;  // 已滿、離線、故障的桶不顯示給市民
-    L.circleMarker([b.lat,b.lng],{radius:9,weight:2,color:'#fff',fillColor:COLORS[b.state],fillOpacity:.95})
-      .bindPopup(`<b>${esc(b.name)}</b><br>${LABEL[b.state]}${b.fill_pct!=null?` · ${Math.round(b.fill_pct)}%`:''}${b.weight_g!=null?` · ${(b.weight_g/1000).toFixed(2)} kg`:''}`)
+  const ok=bins.filter(b=>b.state in COLORS);  // 已滿、離線、故障的桶不顯示給市民
+  for(const b of ok){
+    const f=b.fill_pct==null?null:Math.round(b.fill_pct);
+    L.circleMarker([b.lat,b.lng],{radius:b.id===target?12:9,weight:b.id===target?4:2,color:b.id===target?'#2563eb':'#fff',fillColor:COLORS[b.state],fillOpacity:.95})
+      .bindPopup(`<b>${esc(b.name)}</b><br>${LABEL[b.state]}${f!=null?` · ${f}%`:''}${b.weight_g!=null?` · ${(b.weight_g/1000).toFixed(2)} kg`:''}`+
+        (f!=null?`<div class="bar"><i style="width:${f}%;background:${COLORS[b.state]}"></i></div>`:'')+
+        (b.has_gate?'<small style="color:#666">只收小型隨手垃圾</small>':'')+
+        `<a class="nav" style="padding:7px;margin-top:8px;font-size:13px" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${b.lat},${b.lng}&travelmode=walking">步行導航</a>`)
       .addTo(layer);
   }
+  if(!target) document.getElementById('count').innerHTML=`目前 <b>${ok.length}</b> 個垃圾桶有空位（共 ${bins.length} 個）`;
+  document.getElementById('upd').textContent=`・${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} 更新`;
 }
 
 function locate(){
@@ -90,7 +112,7 @@ document.getElementById('go').onclick=async()=>{
   meMarker=L.circleMarker(me,{radius:7,color:'#fff',weight:3,fillColor:'#2563eb',fillOpacity:1}).addTo(map);
   const r=await (await fetch(`/api/nearest?lat=${me[0]}&lng=${me[1]}&n=3`)).json();
   if(!r.length){clearRoute('附近暫時沒有可用的垃圾桶。');return;}
-  const b=r[0]; target=b.id;
+  const b=r[0]; target=b.id; document.getElementById('count').textContent='';
   if(line) line.remove();
   line=L.polyline([me,[b.lat,b.lng]],{dashArray:'6 8',color:'#2563eb',weight:3}).addTo(map);
   map.fitBounds(line.getBounds(),{padding:[60,60],maxZoom:17});
