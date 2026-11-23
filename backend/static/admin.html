@@ -182,7 +182,8 @@
           <div class="tiles" id="tiles"></div>
           <div class="vision">
             <div><svg id="vis" viewBox="0 0 400 300" role="img" aria-label="相機辨識示意圖（非影像）"></svg>
-              <p class="note">相機辨識示意圖：只顯示辨識結果，不傳影像</p></div>
+              <p class="note" id="vis-note">相機辨識示意圖：只顯示辨識結果，不傳影像</p>
+              <button class="ghost" id="snap-btn" style="margin-top:6px;padding:5px 10px;font-size:12px">📷 開始傳即時照片</button></div>
             <div><h2 style="font-size:13px;margin-bottom:6px">相機最後看到 <small id="vis-age"></small></h2><ul id="vis-list"></ul></div>
           </div>
         </div>
@@ -458,13 +459,45 @@ function renderStatus(st){
   }else{why.hidden=true}
   renderVision(g);
 }
+// ---- 即時照片（#56）：調度台按了才傳，5 分鐘自動停；照片只在伺服器記憶體
+let snapActive=false, snapUrl=null, snapTs=0;
+function renderSnapUi(g){
+  const s=g?.snapshot||{}, btn=document.getElementById('snap-btn'), note=document.getElementById('vis-note');
+  snapActive=!!s.active;
+  btn.hidden=!g||g.mode!=='onnx';
+  btn.textContent=snapActive?'⏹ 停止傳照片':'📷 開始傳即時照片';
+  btn.dataset.on=snapActive?'0':'1';
+  note.textContent=snapActive?`即時照片（低畫質，${s.until?Math.max(0,Math.round((s.until-Date.now()/1000)/60)):0} 分鐘後自動停止）＋辨識框`
+    :g&&g.mode!=='onnx'?'相機辨識示意圖（劇本模式沒有照片）':'相機辨識示意圖：只顯示辨識結果，不傳影像';
+  if(!snapActive&&snapUrl){URL.revokeObjectURL(snapUrl); snapUrl=null}
+}
+async function loadSnapshot(signal){
+  if(!snapActive||!histBin) return;
+  const r=await fetch(`/api/bins/${encodeURIComponent(histBin)}/snapshot`,{headers:H,signal,cache:'no-store'});
+  if(!r.ok||signal?.aborted) return;
+  const ts=+r.headers.get('X-Snapshot-Ts')||0; if(ts&&ts===snapTs) return;
+  const url=URL.createObjectURL(await r.blob());
+  if(snapUrl) URL.revokeObjectURL(snapUrl);
+  snapUrl=url; snapTs=ts;
+}
+document.getElementById('snap-btn').onclick=async e=>{
+  const btn=e.currentTarget, on=btn.dataset.on==='1';
+  if(on&&!confirm('即時照片會拍到路人，只有登入調度台的人看得到、5 分鐘後自動停止。確定開始？')) return;
+  btn.disabled=true;
+  try{
+    const r=await fetch(`/api/bins/${encodeURIComponent(histBin)}/commands`,{method:'POST',headers:H,body:JSON.stringify({cmd:'snapshot',args:{on}})});
+    if(!r.ok) alert('送出失敗：'+await r.text());
+  }finally{btn.disabled=false}
+  clearInterval(cmdPoll); let n=0; loadCommands(); cmdPoll=setInterval(()=>{loadCommands(); if(++n>=15) clearInterval(cmdPoll)},1000);
+};
 function renderVision(g){
+  renderSnapUi(g);
   const svg=document.getElementById('vis'), list=document.getElementById('vis-list'), age=document.getElementById('vis-age');
   const R=(b,stroke,dash,fill)=>`<rect x="${b[0]*400}" y="${b[1]*300}" width="${(b[2]-b[0])*400}" height="${(b[3]-b[1])*300}" fill="${fill||'none'}" stroke="${stroke}" stroke-width="2" ${dash?'stroke-dasharray="6 4"':''} rx="3"/>`;
   if(!g){svg.innerHTML='<text x="200" y="155" fill="#94a3b8" font-size="14" text-anchor="middle">閘門未回報</text>';list.innerHTML='';age.textContent='';return}
   const d=g.detections||{}, items=d.items||[];
   const col=c=>c==='garbage_bag'||c==='other'?'#f87171':c==='hand'?'#fbbf24':'#4ade80';
-  let h='';
+  let h=snapActive&&snapUrl?`<image href="${snapUrl}" x="0" y="0" width="400" height="300" preserveAspectRatio="none"/>`:'';
   if(d.ground_roi) h+=R(d.ground_roi,'#64748b',true,'rgba(100,116,139,.12)')+`<text x="${d.ground_roi[0]*400+6}" y="${d.ground_roi[3]*300-6}" fill="#94a3b8" font-size="12">地面</text>`;
   if(d.slot_roi) h+=R(d.slot_roi,'#38bdf8',true,'rgba(56,189,248,.1)')+`<text x="${d.slot_roi[0]*400+4}" y="${d.slot_roi[1]*300+14}" fill="#7dd3fc" font-size="12">投入口</text>`;
   items.forEach(it=>{const b=it.box;h+=R(b,col(it.cls))+
@@ -483,7 +516,7 @@ async function loadStatus(signal){
 }
 
 // ---- 遠端控制（#41）
-const CMD={gate_policy:'閘門策略',gate_open:'開門',gate_close:'關門',gate_reject:'測試拒收',gate_mode:'切換模式',lcd_text:'LCD 文字',measure_now:'立即量測',tare:'秤重歸零'};
+const CMD={snapshot:'即時照片',gate_policy:'閘門策略',gate_open:'開門',gate_close:'關門',gate_reject:'測試拒收',gate_mode:'切換模式',lcd_text:'LCD 文字',measure_now:'立即量測',tare:'秤重歸零'};
 const CST={pending:['等待 Pi','#c98a00'],sent:['執行中','#2563eb'],done:['完成','#1f6f4a'],failed:['失敗','#c0392b'],expired:['逾時（Pi 沒回應）','#6b7280']};
 async function loadCommands(signal){
   if(!histBin) return;
@@ -491,7 +524,7 @@ async function loadCommands(signal){
   if(!r.ok||signal?.aborted) return;
   const cs=await r.json();
   document.getElementById('cmds').innerHTML=cs.map(c=>{const [t,col]=CST[c.status]||[c.status,'#999'];
-    const arg=c.cmd==='gate_policy'?`→${{auto:'自動',force_open:'強制開啟',force_lock:'強制鎖定'}[c.args.policy]||''}`:c.cmd==='gate_mode'?(c.args.mode==='camera'?'→相機':'→劇本'):c.cmd==='lcd_text'?`「${esc(c.args.text)}」`:'';
+    const arg=c.cmd==='snapshot'?(c.args.on?'→開始':'→停止'):c.cmd==='gate_policy'?`→${{auto:'自動',force_open:'強制開啟',force_lock:'強制鎖定'}[c.args.policy]||''}`:c.cmd==='gate_mode'?(c.args.mode==='camera'?'→相機':'→劇本'):c.cmd==='lcd_text'?`「${esc(c.args.text)}」`:'';
     return `<div><span class="t">${new Date(c.created_at*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}</span>
       <b>${CMD[c.cmd]||esc(c.cmd)}${arg}</b><span class="st" style="color:${col}">${t}</span><span class="rs">${esc(c.result??'')}</span></div>`}).join('');
 }
@@ -533,6 +566,7 @@ async function refresh(){
   if(b.value){renderKpis(b.value, e.value??0); renderFocus(); lastOk=Date.now()}
   if(!controller.signal.aborted) await loadHistory(controller.signal).catch(()=>{});
   if(!controller.signal.aborted) await loadCommands(controller.signal).catch(()=>{});
+  if(!controller.signal.aborted) await loadSnapshot(controller.signal).catch(()=>{});
   if(!controller.signal.aborted) await loadStatus(controller.signal).catch(()=>{});
   clearTimeout(timeout);
   if(poll===controller) poll=null;

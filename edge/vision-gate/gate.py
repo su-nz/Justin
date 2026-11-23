@@ -71,6 +71,10 @@ class Cfg:
     # 遠端控制（#41）
     command_period_s: float = 2.0
     status_period_s: float = 2.0    # 元件狀態上報間隔（#53）
+    # 即時照片（#56）：調度台按了才傳，5 分鐘自動停；低畫質，後端只放記憶體
+    snapshot_s: float = 300.0
+    snapshot_width: int = 320
+    snapshot_quality: int = 50
     manual_open_s: float = 10.0
     mode_file: str = os.environ.get("GATE_MODE_FILE", "/tmp/smartbin-gate-mode")  # run-gate.sh 依此選模式
 
@@ -211,6 +215,8 @@ class OnnxDetector:
 
     def detect(self):
         ok, frame = self.cap.read()
+        if ok:
+            self.last_frame = frame  # 調度台開啟即時照片時才會被編碼上傳（#56）
         if not ok:
             return FRAME_UNAVAILABLE
         import numpy as np
@@ -430,6 +436,19 @@ class CommandPoller(threading.Thread):
             time.sleep(self.cfg.command_period_s)
 
 
+def encode_snapshot(frame, width: int = 320, quality: int = 50) -> bytes | None:
+    """縮成寬 width 的低畫質 JPEG；失敗回 None。"""
+    try:
+        import cv2
+        h, w = frame.shape[:2]
+        small = cv2.resize(frame, (width, max(1, round(h * width / w))), interpolation=cv2.INTER_AREA)
+        ok, buf = cv2.imencode(".jpg", small, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+        return buf.tobytes() if ok else None
+    except Exception as e:
+        log.debug("snapshot encode failed: %s", e)
+        return None
+
+
 class StatusReporter(threading.Thread):
     """每 2 秒把閘門元件狀態（模式、相機、擋板、最後辨識結果）報給後端（#53）。只有文字與座標，不傳影像。"""
 
@@ -450,9 +469,30 @@ class StatusReporter(threading.Thread):
             log.debug("status not sent: %s", e)
             return False
 
+    def post_snapshot(self) -> bool:
+        """調度台開啟即時照片、而且是相機模式時，上傳一張低畫質照片（#56）。"""
+        g = self.gate
+        if g.stopping or time.time() >= g.snapshot_until:
+            return False
+        frame = getattr(g.detector, "last_frame", None)
+        if frame is None:
+            return False
+        jpg = encode_snapshot(frame, self.cfg.snapshot_width, self.cfg.snapshot_quality)
+        if jpg is None:
+            return False
+        import httpx
+        try:
+            r = httpx.post(f"{self.cfg.api}/api/device/snapshot", timeout=5, params={"bin_id": self.cfg.bin_id},
+                           content=jpg, headers={"X-Device-Token": self.cfg.token, "Content-Type": "image/jpeg"})
+            return r.status_code < 300
+        except httpx.HTTPError as e:
+            log.debug("snapshot not sent: %s", e)
+            return False
+
     def run(self):
         while True:
             self.post()
+            self.post_snapshot()
             time.sleep(self.cfg.status_period_s)
 
 
@@ -467,6 +507,8 @@ class Gate:
         self.bin_full = False
         self.bin_blocked = False
         self.stopping = False
+        self.detector = None        # 主程式設定；即時照片從這裡拿最後一張畫面
+        self.snapshot_until = 0.0
         self.policy = self._load_policy()   # auto | force_open | force_lock（#55）
         self.reason = "等待投入"             # 目前判斷原因，給調度台看
         if self.policy == "force_open":      # 換模式重開後立刻套用保留的策略
@@ -526,6 +568,8 @@ class Gate:
                      "last_reject_ts": getattr(self.act, "last_reject_ts", None)},
             "detections": {"items": self.last_dets, "ts": self.last_dets_ts,
                            "slot_roi": list(c.slot_roi), "ground_roi": list(c.ground_roi)},
+            "snapshot": {"active": time.time() < self.snapshot_until, "until": self.snapshot_until or None,
+                         "supported": hasattr(self.detector, "last_frame") or isinstance(self.detector, OnnxDetector)},
             "last_action": None if self.last_action is None else {"what": self.last_action[0], "ts": self.last_action[1]},
         }
 
@@ -536,7 +580,7 @@ class Gate:
                 c = self.commands.get_nowait()
             except queue.Empty:
                 return
-            if c["cmd"] in ("gate_policy", "gate_mode"):
+            if c["cmd"] in ("gate_policy", "gate_mode", "snapshot"):
                 ok, result = self.handle_command(c["cmd"], c.get("args") or {}, now)
             else:
                 ok, result = False, "閘門正在重新啟動，請再按一次"
@@ -569,6 +613,14 @@ class Gate:
         if cmd == "gate_reject":
             self.act.reject()
             return True, "已觸發紅燈與蜂鳴器"
+        if cmd == "snapshot":
+            if args.get("on"):
+                if self.mode != "onnx":
+                    return False, "只有相機即時辨識模式才有照片，請先切換到相機模式"
+                self.snapshot_until = time.time() + self.cfg.snapshot_s
+                return True, f"開始傳照片（{self.cfg.snapshot_s / 60:g} 分鐘後自動停止）"
+            self.snapshot_until = 0.0
+            return True, "已停止傳照片"
         if cmd == "gate_policy":
             policy = args.get("policy")
             if policy not in self.POLICIES:
@@ -756,6 +808,7 @@ def main(argv=None):
             gate.reporter.start()
             StatusReporter(cfg, gate).start()
     gate.mode = a.backend
+    gate.detector = det
     if a.backend == "mock":
         gate.camera = {"state": "scenario", "fps": a.fps, "valid": None, "attempts": None, "detect_ms": None}
     t = time.time()
