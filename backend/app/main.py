@@ -404,5 +404,7 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
 @app.get("/")
-def root():
-    return RedirectResponse("/static/index.html")
+def root(request: Request):
+    # 保留 ?demo=1、?live=1、?bin= 等參數，不然轉址後就失效
+    q = request.url.query
+    return RedirectResponse("/static/index.html" + (f"?{q}" if q else ""))
