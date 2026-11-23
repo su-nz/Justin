@@ -1,0 +1,23 @@
+# Demo 感測節點開機自動啟動（Pi 4）。安裝步驟見 README「Demo 感測節點」。
+# 設定放 /etc/smartbin/node.env（chmod 600）：SMARTBIN_API、BIN_ID、DEVICE_TOKEN、
+# HX711_OFFSET、HX711_SCALE，以及選填的 DEPTH_CM、LCD_ADDR、INTERVAL。
+[Unit]
+Description=Smart Bin demo sensor node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# 預設值；node.env 有設就覆蓋
+Environment=DEPTH_CM=30 LCD_ADDR=0x27 INTERVAL=30
+EnvironmentFile=/etc/smartbin/node.env
+ExecStart=/usr/bin/python3 /opt/smartbin/node_pi.py --depth-cm ${DEPTH_CM} --lcd-addr ${LCD_ADDR} --interval ${INTERVAL}
+# lgpio 會在目前目錄建立通知管線（.lgd-nfy*），systemd 預設目錄是 / 不能寫，要指到可寫的目錄
+WorkingDirectory=/var/lib/smartbin
+StateDirectory=smartbin
+User=smartbin
+SupplementaryGroups=gpio i2c
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
