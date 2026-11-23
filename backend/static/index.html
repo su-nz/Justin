@@ -26,6 +26,8 @@
     background:rgba(255,255,255,.95);border-radius:999px;padding:6px 12px 6px 8px;box-shadow:0 2px 10px rgba(0,0,0,.15);font-size:13px;font-weight:600}
   .brand img{width:22px;height:22px}
   .brand span{color:#555;font-weight:400}
+  .brand button{border:0;background:#eef2f0;color:var(--g);border-radius:999px;padding:3px 9px;font:inherit;font-weight:600;cursor:pointer}
+  .brand button:disabled{opacity:.5}
   .count{font-size:13px;color:#555;margin-top:6px}
   .count b{color:var(--g)}
   .legend small{flex-basis:100%;color:#888}
@@ -38,7 +40,7 @@
 </head>
 <body>
 <div id="map"></div>
-<div class="brand"><img src="/static/icon.svg" alt="">Smart Bin<span id="upd">・載入中</span></div>
+<div class="brand"><img src="/static/icon.svg" alt="">Smart Bin<span id="upd">・載入中</span><button id="reload" title="立刻重新整理">↻</button></div>
 <div class="sheet" id="sheet">
   <h1>手上有垃圾？</h1>
   <p id="msg">幫你找最近、還有空位的公共垃圾桶。</p>
@@ -93,7 +95,7 @@ async function loadBins(){
       .addTo(layer);
   }
   if(!target) document.getElementById('count').innerHTML=`目前 <b>${ok.length}</b> 個垃圾桶有空位（共 ${bins.length} 個）`;
-  document.getElementById('upd').textContent=`・${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} 更新`;
+  updAt=new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 
 function locate(){
@@ -125,7 +127,20 @@ document.getElementById('go').onclick=async()=>{
 };
 
 // ?live=1：每秒更新（#43）
-loadBins(); setInterval(loadBins,Q.get('live')==='1'?1000:DEMO?5000:60000);
+const PERIOD=Q.get('live')==='1'?1000:DEMO?5000:60000;
+let updAt='', nextAt=0, loading=false;
+async function tick(force){
+  if(loading||(!force&&Date.now()<nextAt)) return showUpd();
+  loading=true; document.getElementById('reload').disabled=true; showUpd();
+  try{await loadBins()}catch{} finally{
+    loading=false; nextAt=Date.now()+PERIOD; document.getElementById('reload').disabled=false; showUpd()}
+}
+function showUpd(){
+  const left=Math.max(0,Math.ceil((nextAt-Date.now())/1000));
+  document.getElementById('upd').textContent=loading?'・更新中…':`・${updAt}・${left} 秒後更新`;
+}
+document.getElementById('reload').onclick=()=>tick(true);
+tick(true); setInterval(()=>tick(false),250);
 if('serviceWorker' in navigator) navigator.serviceWorker.register('/static/sw.js');
 </script>
 </body>

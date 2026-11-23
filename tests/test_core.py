@@ -579,3 +579,11 @@ def test_gate_lowers_its_priority(monkeypatch):
     monkeypatch.setenv("GATE_NICE", "0")
     gate.lower_priority()
     assert seen == [10]
+
+
+def test_root_redirect_keeps_query(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "r.db"))
+    with TestClient(main.app) as cl:
+        assert cl.get("/?live=1&bin=NTNU-01", follow_redirects=False).headers["location"] == "/static/index.html?live=1&bin=NTNU-01"
+        assert cl.get("/", follow_redirects=False).headers["location"] == "/static/index.html"
