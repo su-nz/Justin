@@ -587,3 +587,37 @@ def test_root_redirect_keeps_query(tmp_path, monkeypatch):
     with TestClient(main.app) as cl:
         assert cl.get("/?live=1&bin=NTNU-01", follow_redirects=False).headers["location"] == "/static/index.html?live=1&bin=NTNU-01"
         assert cl.get("/", follow_redirects=False).headers["location"] == "/static/index.html"
+
+
+def test_device_status_upsert_auth_and_size(tmp_path, monkeypatch):
+    cl, adm = _cmd_client(tmp_path, monkeypatch)
+    with cl:
+        mk = lambda i: cl.post("/api/bins", headers=adm, json={"id": i, "name": i, "lat": 25.0, "lng": 121.5}).json()["device_token"]
+        tok_a, tok_b = mk("A"), mk("B")
+        body = {"bin_id": "A", "source": "node", "components": {"sonar": {"state": "too_close", "streak": 4}}}
+        assert cl.post("/api/device/status", json=body, headers={"X-Device-Token": tok_b}).status_code == 401
+        assert cl.post("/api/device/status", json={**body, "source": "x"}, headers={"X-Device-Token": tok_a}).status_code == 422
+        assert cl.post("/api/device/status", json=body, headers={"X-Device-Token": tok_a}).status_code == 204
+        body["components"]["sonar"]["state"] = "ok"                     # 同來源只留最新一筆
+        cl.post("/api/device/status", json=body, headers={"X-Device-Token": tok_a})
+        big = {**body, "components": {"img": "x" * 10000}}
+        assert cl.post("/api/device/status", json=big, headers={"X-Device-Token": tok_a}).status_code == 413
+        assert cl.get("/api/bins/A/status").status_code == 401
+        st = cl.get("/api/bins/A/status", headers=adm).json()
+        assert st["node"]["components"]["sonar"]["state"] == "ok" and st["gate"] is None
+        assert cl.get("/api/bins/NOPE/status", headers=adm).status_code == 404
+
+
+def test_gate_snapshot_has_detections_but_no_image():
+    cfg = gate.Cfg()
+    act = gate.Actuators(cfg, dry=True)
+    g = gate.Gate(cfg, act, gate.Uploader(cfg, offline=True))
+    g.note_frame([("cup", 0.82, (0.45, 0.1, 0.52, 0.22)), ("hand", 0.7, (0.4, 0.05, 0.6, 0.3))], 1.0)
+    g.note_frame([], 2.0)                       # 空畫面不會蓋掉最後一次的辨識結果
+    act.reject()
+    snap = g.snapshot()
+    assert [d["cls"] for d in snap["detections"]["items"]] == ["cup", "hand"]
+    assert snap["detections"]["slot_roi"] == list(cfg.slot_roi)
+    assert snap["gate"]["last_reject_ts"] is not None
+    import json
+    assert len(json.dumps(snap)) < 4000

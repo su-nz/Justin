@@ -67,6 +67,7 @@ class Cfg:
     status_file: str = os.environ.get("GATE_STATUS_FILE", "/tmp/smartbin-gate.json")
     # 遠端控制（#41）
     command_period_s: float = 2.0
+    status_period_s: float = 2.0    # 元件狀態上報間隔（#53）
     manual_open_s: float = 10.0
     mode_file: str = os.environ.get("GATE_MODE_FILE", "/tmp/smartbin-gate-mode")  # run-gate.sh 依此選模式
 
@@ -272,6 +273,7 @@ class Actuators:
             self.g, self.r = LED(cfg.led_green), LED(cfg.led_red)
             self.buzzer = Buzzer(cfg.buzzer_pin)
         self.is_open = False
+        self.last_reject_ts: float | None = None
         self._detach_timer: threading.Timer | None = None
         self.close()
 
@@ -305,6 +307,7 @@ class Actuators:
 
     def reject(self):
         log.info("REJECT (red)")
+        self.last_reject_ts = time.time()
         if not self.dry:
             self.r.blink(on_time=0.2, off_time=0.2, n=8, background=True)
             self.buzzer.beep(on_time=0.2, off_time=0.2, n=3, background=True)
@@ -421,6 +424,30 @@ class CommandPoller(threading.Thread):
             time.sleep(self.cfg.command_period_s)
 
 
+class StatusReporter(threading.Thread):
+    """每 2 秒把閘門元件狀態（模式、相機、擋板、最後辨識結果）報給後端（#53）。只有文字與座標，不傳影像。"""
+
+    def __init__(self, cfg: Cfg, gate: "Gate"):
+        super().__init__(daemon=True)
+        self.cfg, self.gate = cfg, gate
+
+    def post(self) -> bool:
+        import httpx
+        try:
+            r = httpx.post(f"{self.cfg.api}/api/device/status", timeout=5,
+                           json={"bin_id": self.cfg.bin_id, "source": "gate", "components": self.gate.snapshot()},
+                           headers={"X-Device-Token": self.cfg.token})
+            return r.status_code < 300
+        except httpx.HTTPError as e:
+            log.debug("status not sent: %s", e)
+            return False
+
+    def run(self):
+        while True:
+            self.post()
+            time.sleep(self.cfg.status_period_s)
+
+
 # ----------------------------------------------------------------------------- main logic
 class Gate:
     def __init__(self, cfg: Cfg, act: Actuators, up: Uploader):
@@ -433,6 +460,31 @@ class Gate:
         self.commands: queue.Queue = queue.Queue()
         self.reporter = None          # CommandPoller；離線時沒有
         self.restart_mode: str | None = None  # 收到 gate_mode → 主迴圈結束，run-gate.sh 換模式重開
+        # 元件狀態（#53）：主迴圈更新，StatusReporter 讀取
+        self.mode = "mock"
+        self.camera = {"state": "starting", "fps": None, "valid": 0, "attempts": 0, "detect_ms": None}
+        self.last_dets: list = []
+        self.last_dets_ts: float | None = None
+        self.last_action: tuple[str, float] | None = None
+
+    def note_frame(self, dets, now: float) -> None:
+        """記下最近一次有辨識到東西的結果（最多 10 個），給調度台畫示意框。"""
+        if dets and dets is not FRAME_UNAVAILABLE:
+            self.last_dets = [{"cls": d[0], "conf": round(float(d[1]), 2), "box": [round(float(v), 3) for v in d[2]]}
+                              for d in sorted(dets, key=lambda d: -d[1])[:10]]
+            self.last_dets_ts = time.time()
+
+    def snapshot(self) -> dict:
+        c = self.cfg
+        return {
+            "mode": self.mode,
+            "camera": dict(self.camera),
+            "gate": {"open": bool(self.act.is_open), "bin_full_lock": bool(self.bin_full),
+                     "last_reject_ts": getattr(self.act, "last_reject_ts", None)},
+            "detections": {"items": self.last_dets, "ts": self.last_dets_ts,
+                           "slot_roi": list(c.slot_roi), "ground_roi": list(c.ground_roi)},
+            "last_action": None if self.last_action is None else {"what": self.last_action[0], "ts": self.last_action[1]},
+        }
 
     def run_commands(self, now: float) -> None:
         """主迴圈每一幀呼叫：執行佇列裡的遠端指令（硬體只在主執行緒動）。"""
@@ -591,6 +643,10 @@ def main(argv=None):
         if cfg.token:
             gate.reporter = CommandPoller(cfg, gate)
             gate.reporter.start()
+            StatusReporter(cfg, gate).start()
+    gate.mode = a.backend
+    if a.backend == "mock":
+        gate.camera = {"state": "scenario", "fps": a.fps, "valid": None, "attempts": None, "detect_ms": None}
     t = time.time()
     attempts, processed, det_s, w0 = 0, 0, 0.0, time.perf_counter()
     try:
@@ -605,11 +661,15 @@ def main(argv=None):
             if gate.restart_mode:
                 log.info("模式切換為 %s，結束讓 run-gate.sh 重新啟動", gate.restart_mode)
                 break
+            was_open = act.is_open
             if dets is FRAME_UNAVAILABLE:
                 gate.step([], t)
             else:
+                gate.note_frame(dets, t)
                 gate.step(dets, t)
                 processed += 1
+            if act.is_open != was_open:
+                gate.last_action = ("open" if act.is_open else "close", time.time())
             if not a.sim_dt:
                 time.sleep(1 / a.fps)
             attempts += 1
@@ -617,6 +677,9 @@ def main(argv=None):
                 now = time.perf_counter()
                 log.info("實際 %.1f FPS（有效影格 %d/%d，含等待）；detect 平均 %.0f ms/次",
                          processed / (now - w0), processed, attempts, det_s / attempts * 1000)
+                gate.camera = {"state": "ok" if processed else "no_frames",
+                               "fps": round(processed / (now - w0), 1), "valid": processed,
+                               "attempts": attempts, "detect_ms": round(det_s / attempts * 1000)}
                 attempts, processed, det_s, w0 = 0, 0, 0.0, now
     except KeyboardInterrupt:
         pass

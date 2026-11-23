@@ -392,3 +392,30 @@ def test_zero_band_cli_and_env(monkeypatch):
     monkeypatch.setenv("HX711_ZERO_BAND_G", "20")
     assert node_pi.parse_args([]).zero_band_g == 20.0
     assert node_pi.parse_args(["--zero-band-g", "0"]).zero_band_g == 0.0
+
+
+def test_block_reason_and_status_reporting():
+    dists = iter([1.0, 1.0, 1.0, None, 20.0, 20.0])
+    sonar = type("S", (), {"read_cm": lambda self: next(dists)})()
+    sent = []
+    node = node_pi.Node("NTNU-01", 30, sonar, scale_note="not_calibrated", status_poster=sent.append)
+    node.step()
+    assert sent[-1]["sonar"]["state"] == "too_close" and sent[-1]["sonar"]["streak"] == 1
+    assert sent[-1]["scale"]["state"] == "not_calibrated" and sent[-1]["lcd"]["state"] == "disabled"
+    node.step(); node.step()
+    assert sent[-1]["sonar"]["blocked"] is True and sent[-1]["sonar"]["streak"] == 3
+    node.step()
+    assert sent[-1]["sonar"]["state"] == "no_echo"
+    node.step()
+    n = len(sent)
+    assert sent[-1]["sonar"]["state"] == "ok" and not sent[-1]["sonar"]["blocked"]
+    node.step()                                   # 狀態沒變、還沒到 10 秒 → 不重複上報
+    assert len(sent) == n
+
+
+def test_scale_state_tracks_timeouts():
+    vals = iter([None, 1500.0])
+    scale = type("H", (), {"read_median": lambda self, n=None: next(vals)})()
+    node = node_pi.Node("NTNU-01", 30, type("S", (), {"read_cm": lambda self: 20.0})(), scale, hx_scale=1.0, hx_offset=1000.0)
+    assert node.read_weight() is None and node.scale_state == "timeout"
+    assert node.read_weight() == 500.0 and node.scale_state == "ok"
