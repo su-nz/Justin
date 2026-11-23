@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>系統流程圖</title>
+<style>
+  :root{--bg:#f6f7f9;--card:#fff;--fg:#111;--muted:#555;--accent:#1f6f4a;--line:#e5e7eb}
+  @media (prefers-color-scheme: dark){:root{--bg:#111418;--card:#1b2026;--fg:#e8eaed;--muted:#a0a7b0;--accent:#4fbf8b;--line:#2c333b}}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif;background:var(--bg);color:var(--fg);line-height:1.6}
+  header{padding:14px 16px;background:#14352a;color:#fff;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  header h1{font-size:18px;margin:0;flex:1}
+  header a{color:#cfe9dc;font-size:14px}
+  main{max-width:1100px;margin:0 auto;padding:16px}
+  section{background:var(--card);border-radius:12px;padding:14px 16px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+  h2{font-size:16px;margin:0 0 4px}
+  p.sub{margin:0 0 10px;color:var(--muted);font-size:13px}
+  .mermaid{overflow-x:auto;text-align:center}
+  .tbl{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  code{word-break:break-all}
+  th,td{text-align:left;padding:6px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+  code{font-size:12px}
+  nav.toc{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+  nav.toc a{padding:5px 10px;border-radius:16px;background:var(--card);color:var(--accent);text-decoration:none;font-size:13px;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+</style>
+</head>
+<body>
+<header><h1>Smart Bin 系統流程圖</h1><a href="/static/index.html">市民地圖</a><a href="/static/admin.html">調度台</a></header>
+<main>
+<nav class="toc"><a href="#overview">總覽</a><a href="#sensor">感測與狀態</a><a href="#gate">視覺閘門</a><a href="#ground">地面垃圾</a><a href="#dispatch">清運派車</a><a href="#table">門檻一覽</a></nav>
+
+<section id="overview">
+  <h2>① 總覽：資料從哪裡來、到哪裡去</h2>
+  <p class="sub">桶上的 Pi 4 量數據並判斷閘門，上傳到伺服器；伺服器決定桶子狀態，再推給市民地圖、LINE 和清運調度台。</p>
+<pre class="mermaid">
+flowchart LR
+  subgraph PI["垃圾桶上的 Raspberry Pi 4"]
+    US["超音波<br/>量垃圾高度"] --> NODE["node_pi.py<br/>每 10–30 秒一輪"]
+    HX["荷重元 + HX711<br/>量重量"] --> NODE
+    NODE --> LCD["LCD<br/>滿度 % / 重量 kg"]
+    CAM["相機"] --> GATE["gate.py<br/>視覺閘門"]
+    GATE --> ACT["擋板 / 綠燈<br/>紅燈 / 蜂鳴器"]
+  end
+  NODE -- "POST /api/telemetry<br/>滿度、距離、重量、遮擋" --> SRV["伺服器 FastAPI<br/>狀態判斷 + 資料庫"]
+  GATE -- "POST /api/events<br/>拒收、地面垃圾" --> SRV
+  SRV -- "每 60 秒查桶滿了沒" --> GATE
+  SRV --> MAP["市民地圖<br/>找有空位的桶"]
+  SRV --> LINE["LINE 官方帳號<br/>傳位置 → 最近空桶"]
+  SRV --> ADM["清運調度台<br/>事件 + 動態派車"]
+</pre>
+</section>
+
+<section id="sensor">
+  <h2>② 感測數據 → 桶子狀態</h2>
+  <p class="sub">每一輪：量 9 次超音波取中位數、讀 15 次重量取中位數 → 判斷遮擋 → 更新 LCD → 上傳 → 伺服器分級。</p>
+<pre class="mermaid">
+flowchart TD
+  A["量一輪<br/>超音波距離 + 重量"] --> B{"連續 3 輪量不到<br/>或距離 &lt; 2.5 cm？"}
+  B -- 是 --> BL["blocked = true<br/>LCD 顯示 BLOCKED"]
+  B -- 否 --> F["滿度 = (桶深 − 距離) ÷ 桶深"]
+  BL --> UP["上傳伺服器"]
+  F --> UP
+  UP --> S0{"超過 65 分鐘<br/>沒收到資料？"}
+  S0 -- 是 --> OFF["⚫ 離線<br/>地圖灰色、不導流"]
+  S0 -- 否 --> S1{"感測被擋？"}
+  S1 -- 是 --> W{"重量 ≥ FULL_WEIGHT_G？<br/>（有設定才判斷）"}
+  W -- 是 --> FULL
+  W -- 否 --> FAULT["🟣 感測被擋<br/>記 sensor_blocked 事件<br/>派車時順路檢查"]
+  S1 -- 否 --> S2{"滿度 ≥ 90%<br/>或重量 ≥ 門檻？"}
+  S2 -- 是 --> FULL["🔴 已滿<br/>地圖與 LINE 不再導向此桶<br/>閘門連小垃圾都不開"]
+  S2 -- 否 --> S3{"滿度 ≥ 75%？"}
+  S3 -- 是 --> NEAR["🟡 快滿<br/>仍可導流，排序較後"]
+  S3 -- 否 --> AV["🟢 有空位"]
+  FULL -. "降到 85% 以下才離開（遲滯 5%）" .-> NEAR
+  NEAR -. "降到 70% 以下才離開" .-> AV
+</pre>
+</section>
+
+<section id="gate">
+  <h2>③ 視覺閘門：投入口看到什麼 → 擋板怎麼動</h2>
+  <p class="sub">相機每秒判斷數次，同一結果要<b>連續 2 幀</b>才動作，避免誤判。Demo 劇本模式用預錄的偵測結果驅動同一套邏輯。</p>
+<pre class="mermaid">
+flowchart TD
+  D["投入口偵測到物體"] --> G1{"垃圾袋？<br/>或物體 &gt; 投入口 35%？"}
+  G1 -- 是 --> R["❌ 拒收<br/>擋板不開（開著就關）<br/>紅燈閃 + 蜂鳴器響 3 聲"]
+  R --> RE["上傳 bag_rejected<br/>（同類 60 秒內只傳一次）<br/>調度台出現事件"]
+  G1 -- 否 --> G2{"杯子、瓶罐、紙、便當盒？"}
+  G2 -- 否 --> N["不動作"]
+  G2 -- 是 --> G3{"伺服器說桶已滿？"}
+  G3 -- 是 --> R2["❌ 不開<br/>紅燈 + 蜂鳴器<br/>引導去下一個空桶"]
+  G3 -- 否 --> O["✅ 開閘 4 秒<br/>綠燈亮"]
+  O --> H{"投入口還有手？"}
+  H -- 是 --> O2["保持開啟（防夾）"]
+  H -- 否 --> C["關閘、綠燈熄"]
+</pre>
+</section>
+
+<section id="ground">
+  <h2>④ 地面垃圾：外溢還是違規傾倒？</h2>
+  <p class="sub">相機同時看桶邊地面，每 60 秒算一次垃圾覆蓋率。伺服器再用桶的滿度判斷原因（融合判斷）。</p>
+<pre class="mermaid">
+flowchart TD
+  A["地面區域覆蓋率"] --> B{"連續 2 次 ≥ 5%？"}
+  B -- 否 --> X["不回報"]
+  B -- 是 --> C["上傳 ground_waste<br/>（15 分鐘內不重複）"]
+  C --> D{"伺服器查這個桶的滿度"}
+  D -- "≥ 90%" --> OV["桶滿外溢 overflow<br/>→ 該加收"]
+  D -- "&lt; 90%" --> ID["違規傾倒 illegal_dumping<br/>→ 桶沒滿卻丟地上"]
+  D -- "沒有資料" --> UK["地面垃圾（原因不明）"]
+  OV --> E["調度台紅色警示<br/>派車時列為必收"]
+  ID --> E
+  UK --> E
+</pre>
+</section>
+
+<section id="dispatch">
+  <h2>⑤ 清運派車：哪些桶要收？</h2>
+  <p class="sub">調度台按「產生路線」時，只收需要收的桶，用 OR-Tools 算最短路線，並和「固定排程繞全部桶」比較節省多少距離。</p>
+<pre class="mermaid">
+flowchart TD
+  A["每個桶"] --> B{"有未處理的<br/>外溢 / 違規傾倒事件？"}
+  B -- 是 --> M["必收"]
+  B -- 否 --> C{"已滿？"}
+  C -- 是 --> M
+  C -- 否 --> P{"依填滿速度預測<br/>N 小時內會滿？"}
+  P -- 是 --> M
+  P -- 否 --> Q{"快滿 或 感測被擋？"}
+  Q -- 是 --> S["順路收 / 順路檢查"]
+  Q -- 否 --> K["這趟不收"]
+  M --> R["OR-Tools 規劃路線<br/>（容量限制、多車）"]
+  S --> R
+  R --> V["調度台顯示路線<br/>動態 vs 固定排程 節省 %"]
+</pre>
+</section>
+
+<section id="table">
+  <h2>⑥ 門檻一覽</h2>
+  <div class="tbl"><table>
+    <tr><th>規則</th><th>數值</th><th>結果</th><th>程式位置</th></tr>
+    <tr><td>快滿</td><td>滿度 ≥ 75%</td><td>🟡 快滿，仍導流</td><td><code>backend/app/logic.py</code></td></tr>
+    <tr><td>已滿</td><td>滿度 ≥ 90%</td><td>🔴 不導流、閘門不開</td><td><code>logic.py</code></td></tr>
+    <tr><td>遲滯</td><td>5%</td><td>避免在門檻附近一直跳</td><td><code>logic.py</code></td></tr>
+    <tr><td>重量判滿</td><td><code>FULL_WEIGHT_G</code>（選填）</td><td>小而重的垃圾也算滿</td><td><code>logic.py</code></td></tr>
+    <tr><td>離線</td><td>65 分鐘沒資料</td><td>⚫ 離線</td><td><code>logic.py</code></td></tr>
+    <tr><td>已清運</td><td>兩筆之間掉 ≥ 30%</td><td>重新計算填滿速度</td><td><code>logic.py</code></td></tr>
+    <tr><td>感測遮擋</td><td>連續 3 輪量不到或 &lt; 2.5 cm</td><td>🟣 感測被擋、LCD 顯示 BLOCKED</td><td><code>edge/pi-demo/node_pi.py</code></td></tr>
+    <tr><td>閘門確認</td><td>連續 2 幀</td><td>才開閘或拒收</td><td><code>edge/vision-gate/gate.py</code></td></tr>
+    <tr><td>物體過大</td><td>&gt; 投入口面積 35%</td><td>拒收</td><td><code>gate.py</code></td></tr>
+    <tr><td>開閘時間</td><td>4 秒（有手就延長）</td><td>然後關閘</td><td><code>gate.py</code></td></tr>
+    <tr><td>拒收上傳冷卻</td><td>60 秒</td><td>每次都有燈號，但只傳一次事件</td><td><code>gate.py</code></td></tr>
+    <tr><td>地面垃圾</td><td>每 60 秒、連續 2 次覆蓋率 ≥ 5%</td><td>上傳 ground_waste，15 分鐘冷卻</td><td><code>gate.py</code></td></tr>
+    <tr><td>閘門查桶況</td><td>每 60 秒</td><td>桶滿就不開閘</td><td><code>gate.py</code></td></tr>
+  </table></div>
+</section>
+</main>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.esm.min.mjs';
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  mermaid.initialize({startOnLoad:true, theme: dark?'dark':'default', flowchart:{htmlLabels:true, curve:'basis'}, securityLevel:'strict'});
+</script>
+</body>
+</html>
