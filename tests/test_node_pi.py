@@ -370,3 +370,25 @@ def test_sonar_uses_configured_sample_count(monkeypatch):
     monkeypatch.setattr(s, "ping_cm", lambda: pings.append(1) or 20.0, raising=False)
     monkeypatch.setattr(node_pi.time, "sleep", lambda _: None)
     assert s.read_cm() == 20.0 and len(pings) == 5
+
+
+def test_weight_zero_band(monkeypatch):
+    raws = iter([1040.0, 960.0, 1200.0, None])            # offset 1000、scale 1 → +40、-40、+200、讀不到
+    scale = type("H", (), {"read_median": lambda self, n=None: next(raws)})()
+    sonar = type("S", (), {"read_cm": lambda self: 20.0})()
+    node = node_pi.Node("NTNU-01", 30, sonar, scale, hx_scale=1.0, hx_offset=1000.0)
+    assert node.read_weight() == 0.0
+    assert node.read_weight() == 0.0
+    assert node.read_weight() == 200.0
+    assert node.read_weight() is None                      # 讀不到仍是 None，不能變成 0
+    raws = iter([1040.0])
+    node.zero_band_g = 0                                    # 停用
+    assert node.read_weight() == 40.0
+
+
+def test_zero_band_cli_and_env(monkeypatch):
+    monkeypatch.delenv("HX711_ZERO_BAND_G", raising=False)
+    assert node_pi.parse_args([]).zero_band_g == 50.0
+    monkeypatch.setenv("HX711_ZERO_BAND_G", "20")
+    assert node_pi.parse_args([]).zero_band_g == 20.0
+    assert node_pi.parse_args(["--zero-band-g", "0"]).zero_band_g == 0.0

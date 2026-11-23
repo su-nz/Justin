@@ -40,6 +40,7 @@ HX_SCK = 27
 HX_SAMPLES = 15            # 每輪讀 15 筆取中位數（HX711 每秒 10 筆 → 約 1.5 秒）
 FAST_SONAR_SAMPLES = 5     # --fast：每輪約 0.6 秒，LCD／網站接近每秒更新（#43）
 FAST_HX_SAMPLES = 4
+ZERO_BAND_G = 50.0         # |重量| < 50 g 視為 0：空秤零點漂移不要顯示成有東西（#46）
 HX_TARE_SAMPLES = 30
 HX_TIMEOUT_S = 1.0         # HX711 10 SPS，1 秒內一定要有資料，否則視為沒接
 BLOCK_DIST_CM = 2.5        # 和韌體 BLOCK_DIST_MM 一致
@@ -425,7 +426,7 @@ class Node:
     def __init__(self, bin_id: str, depth_cm: float, sonar, scale=None,
                  hx_scale: float | None = None, hx_offset: float | None = None,
                  lcd: Lcd | None = None, poster=None, gate_status_file: str = "",
-                 commands: CommandClient | None = None):
+                 commands: CommandClient | None = None, zero_band_g: float = ZERO_BAND_G):
         self.bin_id = bin_id
         self.depth_cm = depth_cm
         self.sonar = sonar
@@ -440,6 +441,7 @@ class Node:
         self._reading: tuple | None = None   # 最近一輪 (fill, weight, blocked)，閘門狀態變了就重畫
         self._lcd_lines: tuple[str, str] | None = None
         self.commands = commands
+        self.zero_band_g = max(zero_band_g, 0.0)
         self.lcd_text: tuple[str, str] | None = None   # 遠端自訂文字
         self.lcd_text_until = 0.0
 
@@ -470,7 +472,8 @@ class Node:
         if raw is None:
             log.warning("HX711 沒有回應（逾時），這輪不送 weight_g")
             return None
-        return (raw - self.hx_offset) / self.hx_scale
+        grams = (raw - self.hx_offset) / self.hx_scale
+        return 0.0 if abs(grams) < self.zero_band_g else grams
 
     def step(self) -> dict | None:
         """量一輪、更新 LCD、上傳。回傳送出的 payload；沒東西可送時回傳 None。"""
@@ -601,8 +604,13 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--hx-samples", type=int, default=None, help=f"每輪 HX711 取樣數（預設 {HX_SAMPLES}）")
     ap.add_argument("--fast", action="store_true",
                     help=f"快速模式：超音波 {FAST_SONAR_SAMPLES} 筆、HX711 {FAST_HX_SAMPLES} 筆，每輪約 0.6 秒；搭配 --interval 1")
+    ap.add_argument("--zero-band-g", type=float, default=None,
+                    help=f"重量絕對值小於這個克數就當 0（預設 {ZERO_BAND_G:g}，或環境變數 HX711_ZERO_BAND_G；0 = 停用）")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args(argv)
+    if a.zero_band_g is None:
+        env = _env_float("HX711_ZERO_BAND_G")
+        a.zero_band_g = ZERO_BAND_G if env is None else env
     if a.hx_scale is None:
         a.hx_scale = _env_float("HX711_SCALE")
     if a.hx_offset is None:
@@ -693,7 +701,8 @@ def main(argv=None) -> int:
     node = Node(a.bin, a.depth_cm, sonar, scale, hx_scale, hx_offset, lcd,
                 poster=lambda p: post_telemetry(a.api, a.token, p),
                 gate_status_file="" if a.dry else GATE_STATUS_FILE,
-                commands=CommandClient(a.api, a.token, a.bin) if a.token else None)
+                commands=CommandClient(a.api, a.token, a.bin) if a.token else None,
+                zero_band_g=a.zero_band_g)
     log.info("開始：bin=%s api=%s 桶深=%.1f cm 間隔=%.0f s 秤重=%s%s", a.bin, a.api, a.depth_cm,
              a.interval, "開" if scale else "關", "（dry）" if a.dry else "")
     try:
