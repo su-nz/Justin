@@ -68,7 +68,7 @@ async function loadBins(){
   for(const b of bins){
     if(!(b.state in COLORS)) continue;  // 已滿、離線、故障的桶不顯示給市民
     L.circleMarker([b.lat,b.lng],{radius:9,weight:2,color:'#fff',fillColor:COLORS[b.state],fillOpacity:.95})
-      .bindPopup(`<b>${esc(b.name)}</b><br>${LABEL[b.state]}${b.fill_pct!=null?` · ${Math.round(b.fill_pct)}%`:''}`)
+      .bindPopup(`<b>${esc(b.name)}</b><br>${LABEL[b.state]}${b.fill_pct!=null?` · ${Math.round(b.fill_pct)}%`:''}${b.weight_g!=null?` · ${(b.weight_g/1000).toFixed(2)} kg`:''}`)
       .addTo(layer);
   }
 }

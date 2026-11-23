@@ -161,7 +161,8 @@ python edge/vision-gate/gate.py --backend onnx --model yolo11n.onnx --labels coc
 | POST | `/api/telemetry`、`/api/events` | `X-Device-Token` |
 | GET | `/api/bins`、`/api/nearest?lat=&lng=` | 公開 |
 | POST | `/api/bins`、`/api/dispatch/plan`、`/api/events/{id}/resolve` | `Authorization: Bearer <ADMIN_TOKEN>` |
-| GET | `/api/events`、`/api/dispatch/latest`、`/api/admin/bins`（調度台用，多 `last_seen`、`open_events`） | admin |
+| GET | `/api/events`、`/api/dispatch/latest`、`/api/admin/bins`（調度台用，多 `last_seen`、`open_events`、最新原始讀值 `dist_mm`、`blocked`） | admin |
+| GET | `/api/bins/{id}/history?hours=1&max_points=300`（最近 N 小時 telemetry，依時間排序；`hours` ≤ 168，點數超過 `max_points` 會等距抽樣並保留最後一筆） | admin |
 | POST | `/line/webhook` | LINE 簽章驗證 |
 
 ## 下一步
