@@ -135,7 +135,7 @@ GPIO：伺服 18、綠燈 23、紅燈 24、蜂鳴器 25（`Cfg` 可改）。閘�
 sudo apt install -y pigpio python3-pigpio && sudo systemctl enable --now pigpiod
 python3 edge/vision-gate/gate.py --backend mock --scenario edge/vision-gate/scenarios/demo.json --drive --fps 1 --offline
 ```
-擋板沒開或關到位時，用 `--open-angle`／`--close-angle`（0–180°，預設 90／0；0.5–2.5 ms 對應 0–180°）對齊實物。
+擋板轉到位 0.6 秒後會停 PWM（detach），新版 Raspberry Pi OS 沒有 pigpio、只能用軟體 PWM 時也不會一直抖；擋板需要伺服一直出力才撐得住時加 `--servo-hold`。擋板沒開或關到位時，用 `--open-angle`／`--close-angle`（0–180°，預設 90／0；0.5–2.5 ms 對應 0–180°）對齊實物。
 
 沒有 AI Camera 時可以用 USB 視訊鏡頭跑 `--backend onnx`（Pi 4 CPU 推論）。鏡頭不是 `/dev/video0` 時，先用 `v4l2-ctl --list-devices` 找編號，再用 `--camera 2` 或 `--camera /dev/video2` 指定（也可設環境變數 `GATE_CAMERA`）。
 

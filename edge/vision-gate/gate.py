@@ -55,7 +55,9 @@ class Cfg:
     servo_max_pulse: float = 0.0025
     servo_open_angle: float = 90.0
     servo_close_angle: float = 0.0
-    servo_settle_s: float = 0.6     # SG90 轉 90° 約 0.3 s；結束時保留關門訊號這麼久再放掉
+    servo_settle_s: float = 0.6     # SG90 轉 90° 約 0.3 s；到位後保留訊號這麼久再放掉
+    # 到位後停 PWM（detach）：軟體 PWM（沒有 pigpio）時伺服會一直微抖。機構要伺服一直出力才撐得住時設 True
+    servo_hold: bool = False
     led_green: int = 23
     led_red: int = 24
     buzzer_pin: int = 25
@@ -261,22 +263,34 @@ class Actuators:
             self.g, self.r = LED(cfg.led_green), LED(cfg.led_red)
             self.buzzer = Buzzer(cfg.buzzer_pin)
         self.is_open = False
+        self._detach_timer: threading.Timer | None = None
         self.close()
+
+    def _move(self, angle: float, settle: bool = True) -> None:
+        """轉到 angle；不是 servo_hold 時，到位後停 PWM，下次設定角度 gpiozero 會自動恢復輸出。"""
+        if self._detach_timer is not None:
+            self._detach_timer.cancel()  # 上一個動作的 detach 不能打斷這次轉動
+            self._detach_timer = None
+        self.servo.angle = angle
+        if settle and not self.cfg.servo_hold:
+            self._detach_timer = threading.Timer(self.cfg.servo_settle_s, self.servo.detach)
+            self._detach_timer.daemon = True
+            self._detach_timer.start()
 
     def open(self):
         self.is_open = True
         log.info("GATE OPEN")
         if not self.dry:
-            self.servo.angle = self.cfg.servo_open_angle
+            self._move(self.cfg.servo_open_angle)
             self.g.on()
             self.r.off()
             write_gate_status(self.cfg.status_file, "open")
 
-    def close(self):
+    def close(self, settle: bool = True):
         self.is_open = False
         log.info("GATE CLOSE")
         if not self.dry:
-            self.servo.angle = self.cfg.servo_close_angle
+            self._move(self.cfg.servo_close_angle, settle)
             self.g.off()
             write_gate_status(self.cfg.status_file, "close")
 
@@ -288,7 +302,7 @@ class Actuators:
             write_gate_status(self.cfg.status_file, "reject")
 
     def shutdown(self):
-        self.close()
+        self.close(settle=False)  # 這裡自己等、自己 detach，不排計時器
         if not self.dry:
             time.sleep(self.cfg.servo_settle_s)  # 保留關門訊號，讓擋板關到位再放掉
             self.servo.detach()
@@ -439,6 +453,8 @@ def main(argv=None):
                     help="mock 劇本也驅動實體伺服、LED、蜂鳴器（#6 劇本模式；建議搭配 --fps 1）")
     ap.add_argument("--open-angle", type=float, help="擋板打開時的伺服角度（0–180，預設 90）")
     ap.add_argument("--close-angle", type=float, help="擋板關閉時的伺服角度（0–180，預設 0）")
+    ap.add_argument("--servo-hold", action="store_true",
+                    help="到位後不停 PWM，伺服一直出力（擋板撐不住時用；軟體 PWM 會微抖）")
     ap.add_argument("--offline", action="store_true", help="不上傳，只印事件")
     ap.add_argument("--sim-dt", type=float, default=0, help="mock 時每幀推進的模擬秒數")
     ap.add_argument("--labels", choices=["smartbin", "coco"], default="smartbin",
@@ -456,6 +472,7 @@ def main(argv=None):
         cfg.servo_open_angle = a.open_angle
     if a.close_angle is not None:
         cfg.servo_close_angle = a.close_angle
+    cfg.servo_hold = a.servo_hold
     if a.backend == "mock":
         det = MockDetector(a.scenario)
     elif a.backend == "onnx":
