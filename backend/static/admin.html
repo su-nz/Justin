@@ -2,66 +2,171 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>清運調度台</title>
+<meta name="theme-color" content="#14352a">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
+  :root{--g:#1f6f4a;--y:#c98a00;--r:#c0392b;--k:#6b7280;--p:#7c3aed;--b:#2563eb;
+    --bg:#f3f5f7;--card:#fff;--fg:#111827;--muted:#6b7280;--line:#e5e7eb;--soft:#f3f4f6}
   *{box-sizing:border-box}
-  body{margin:0;font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif;color:#111;background:#f6f7f9}
-  header{display:flex;align-items:center;gap:12px;padding:12px 16px;background:#14352a;color:#fff}
-  header h1{font-size:17px;margin:0;flex:1}
-  main{display:grid;grid-template-columns:1fr 420px;gap:12px;padding:12px;height:calc(100vh - 50px)}
-  @media(max-width:900px){main{grid-template-columns:1fr;height:auto}#map{height:55vh}}
-  #map{border-radius:12px;min-height:300px}
-  aside{overflow:auto;display:flex;flex-direction:column;gap:12px}
-  .card{background:#fff;border-radius:12px;padding:12px 14px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
-  .card h2{font-size:14px;margin:0 0 8px}
-  .kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center}
-  .kpi b{display:block;font-size:20px}
-  .kpi span{font-size:12px;color:#666}
-  table{width:100%;border-collapse:collapse;font-size:13px}
-  td,th{padding:5px 4px;border-bottom:1px solid #eee;text-align:left}
-  .pill{display:inline-block;padding:1px 7px;border-radius:9px;font-size:11px;color:#fff}
-  tr.warn td{background:#fdecea}
-  label{font-size:13px;margin-right:8px}
-  input{width:64px}
-  button{padding:7px 12px;border:0;border-radius:8px;background:#1f6f4a;color:#fff;font-weight:600;cursor:pointer}
-  button.ghost{background:#eee;color:#111}
+  body{margin:0;font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif;color:var(--fg);background:var(--bg);font-size:14px}
+  header{position:sticky;top:0;z-index:1100;display:flex;align-items:center;gap:10px;padding:10px 16px;background:#14352a;color:#fff}
+  header h1{font-size:16px;margin:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  header a{color:#cfe9dc;font-size:13px;text-decoration:none;white-space:nowrap}
+  .live{font-size:12px;color:#cfe9dc;white-space:nowrap}
+  .live i{display:inline-block;width:8px;height:8px;border-radius:50%;background:#4ade80;margin-right:5px;vertical-align:0}
+  .live.stale i{background:#f87171}
+  button{font:inherit;padding:7px 12px;border:0;border-radius:8px;background:var(--g);color:#fff;font-weight:600;cursor:pointer}
+  button.ghost{background:var(--soft);color:var(--fg)}
+  header button.ghost{background:rgba(255,255,255,.14);color:#fff}
+
+  /* 版面：手機單欄；平板以上地圖在左、資訊在右 */
+  .wrap{padding:12px;display:grid;gap:12px;max-width:1500px;margin:0 auto}
+  .kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+  .kpi{background:var(--card);border-radius:12px;padding:10px 12px;box-shadow:0 1px 2px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+  .kpi b{display:block;font-size:22px;line-height:1.2}
+  .kpi span{font-size:12px;color:var(--muted)}
+  .main{display:grid;gap:12px;grid-template-columns:1fr}
+  .col{display:grid;gap:12px;align-content:start;min-width:0}
+  #map{height:42vh;min-height:260px;border-radius:12px;z-index:0}
+  @media(min-width:960px){
+    .main{grid-template-columns:minmax(0,1.15fr) minmax(380px,1fr)}
+    #map{height:calc(100vh - 190px);min-height:480px;position:sticky;top:64px}
+  }
+  @media(max-width:640px){
+    .kpis{grid-template-columns:repeat(3,1fr)}
+    .kpi:nth-child(n+4){display:none}
+    header .hide-sm{display:none}
+  }
+  .card{background:var(--card);border-radius:12px;padding:14px;box-shadow:0 1px 2px rgba(0,0,0,.06);min-width:0}
+  .card h2{font-size:15px;margin:0;display:flex;align-items:center;gap:8px}
+  .card h2 small{font-weight:400;color:var(--muted);font-size:12px}
+  .head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+  .head h2{flex:1}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600;color:#fff;white-space:nowrap}
+
+  /* 焦點桶 */
+  .focus-top{display:flex;gap:14px;align-items:center}
+  .gauge{--v:0;--c:var(--g);flex:none;width:96px;height:96px;border-radius:50%;
+    background:conic-gradient(var(--c) calc(var(--v)*1%),var(--soft) 0);display:grid;place-items:center}
+  .gauge>div{width:74px;height:74px;border-radius:50%;background:var(--card);display:grid;place-items:center;text-align:center}
+  .gauge b{font-size:22px;line-height:1}
+  .gauge span{font-size:11px;color:var(--muted)}
+  .stats{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:8px;min-width:0}
+  .stat{background:var(--soft);border-radius:10px;padding:7px 10px}
+  .stat span{display:block;font-size:11px;color:var(--muted)}
+  .stat b{font-size:16px}
+  .seg{display:inline-flex;background:var(--soft);border-radius:8px;padding:2px}
+  .seg button{background:transparent;color:var(--fg);padding:4px 10px;font-size:12px}
+  .seg button.on{background:var(--card);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+  #hist-wrap{position:relative;height:230px;margin-top:12px}
+  .note{font-size:12px;color:var(--muted);margin:6px 0 0}
+
+  /* 事件 */
+  .events{display:grid;gap:6px;max-height:320px;overflow:auto}
+  .ev{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:10px;background:var(--soft)}
+  .ev.open{background:#fdecea}
+  .ev .t{font-size:12px;color:var(--muted);white-space:nowrap}
+  .ev .m{flex:1;min-width:0}
+  .ev .m b{font-size:13px}
+  .ev .m small{display:block;color:var(--muted);font-size:12px}
+  .ev button{padding:5px 10px;font-size:12px}
+  .empty{color:var(--muted);font-size:13px;padding:8px 0}
+
+  /* 桶子清單：卡片，手機也好讀 */
+  .filters{display:flex;gap:6px;flex-wrap:wrap}
+  .filters button{padding:4px 10px;font-size:12px;background:var(--soft);color:var(--fg)}
+  .filters button.on{background:var(--fg);color:#fff}
+  .bins{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}
+  .bin{border:1.5px solid var(--line);border-radius:12px;padding:10px;cursor:pointer;background:var(--card);text-align:left;color:inherit;font-weight:400}
+  .bin:hover{border-color:#cbd5e1}
+  .bin.sel{border-color:var(--g);box-shadow:0 0 0 2px rgba(31,111,74,.18)}
+  .bin.warn{background:#fff7f6;border-color:#f3c5bf}
+  .bin .r1{display:flex;align-items:center;gap:6px}
+  .bin .r1 b{flex:1;font-size:14px}
+  .bin .nm{font-size:12px;color:var(--muted);margin:2px 0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .bar{height:6px;background:var(--soft);border-radius:3px;overflow:hidden}
+  .bar i{display:block;height:100%}
+  .bin .r3{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-top:6px;gap:6px}
+  .bin .r3 b{color:var(--fg)}
+
+  /* 派車 */
+  .form{display:grid;grid-template-columns:repeat(3,1fr) auto;gap:8px;align-items:end}
+  .form label{font-size:12px;color:var(--muted);display:grid;gap:3px}
+  .form input{font:inherit;width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px}
+  @media(max-width:420px){.form{grid-template-columns:repeat(3,1fr)}.form button{grid-column:1/-1}}
+  .routekpi{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center;margin-top:12px}
+  .routekpi div{background:var(--soft);border-radius:10px;padding:8px}
+  .routekpi b{display:block;font-size:18px}
+  .routekpi span{font-size:12px;color:var(--muted)}
   ol{padding-left:20px;margin:6px 0;font-size:13px}
-  #bins tr[data-id]{cursor:pointer}
-  #bins tr.sel td{outline:2px solid #1f6f4a;outline-offset:-2px}
-  .hist-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px}
-  .hist-head h2{margin:0;flex:1}
-  .hist-head button{padding:4px 9px;font-size:12px}
-  .hist-head button.on{background:#1f6f4a;color:#fff}
-  #hist-wrap{position:relative;height:220px}
-  #hist-now{font-size:12px;color:#444;margin:6px 0 0}
 </style>
 </head>
 <body>
-<header><h1>Smart Bin 清運調度台</h1><a href="/static/flow.html" style="color:#cfe9dc;font-size:14px">系統流程圖</a><button class="ghost" id="logout">登出</button></header>
-<main>
-  <div id="map"></div>
-  <aside>
-    <div class="card">
-      <h2>動態派車</h2>
-      <label>車輛 <input id="veh" type="number" value="1" min="1" max="10"></label>
-      <label>容量(L) <input id="cap" type="number" value="2000" step="100"></label>
-      <label>預測(h) <input id="hz" type="number" value="4" step="0.5"></label>
-      <button id="plan">產生路線</button>
-      <div class="kpi" id="kpi" style="margin-top:10px"></div>
-      <div id="routes"></div>
+<header>
+  <h1>Smart Bin 清運調度台</h1>
+  <span class="live" id="live"><i></i>連線中…</span>
+  <a href="/static/flow.html" class="hide-sm">系統流程圖</a>
+  <a href="/" class="hide-sm">市民地圖</a>
+  <button class="ghost" id="logout">登出</button>
+</header>
+<div class="wrap">
+  <div class="kpis" id="kpis"></div>
+  <div class="main">
+    <div id="map"></div>
+    <div class="col">
+      <section class="card" id="focus">
+        <div class="head">
+          <h2 id="f-title">感測數據</h2>
+          <span id="f-pill"></span>
+        </div>
+        <div class="focus-top">
+          <div class="gauge" id="f-gauge"><div><b id="f-fill">--</b><span>滿度</span></div></div>
+          <div class="stats">
+            <div class="stat"><span>重量</span><b id="f-weight">--</b></div>
+            <div class="stat"><span>超音波距離</span><b id="f-dist">--</b></div>
+            <div class="stat"><span>預測多久滿</span><b id="f-htf">--</b></div>
+            <div class="stat"><span>最後上傳</span><b id="f-seen">--</b></div>
+          </div>
+        </div>
+        <p class="note" id="f-note"></p>
+        <div class="head" style="margin:12px 0 0">
+          <h2 style="font-size:13px">歷史曲線 <small>紫色底＝感測器被擋</small></h2>
+          <div class="seg" id="range"><button data-h="1">1 小時</button><button data-h="6">6 小時</button><button data-h="24">24 小時</button></div>
+        </div>
+        <div id="hist-wrap"><canvas id="hist"></canvas></div>
+      </section>
+
+      <section class="card">
+        <div class="head"><h2>事件 <small id="ev-count"></small></h2></div>
+        <div class="events" id="events"></div>
+      </section>
+
+      <section class="card">
+        <div class="head">
+          <h2>垃圾桶 <small>點一個看詳細</small></h2>
+          <div class="filters" id="filters">
+            <button data-f="all" class="on">全部</button><button data-f="attn">需處理</button><button data-f="full">已滿</button>
+          </div>
+        </div>
+        <div class="bins" id="bins"></div>
+      </section>
+
+      <section class="card">
+        <div class="head"><h2>動態派車 <small>只收已滿、快滿或有事件的桶</small></h2></div>
+        <div class="form">
+          <label>車輛<input id="veh" type="number" value="1" min="1" max="10"></label>
+          <label>容量 (L)<input id="cap" type="number" value="2000" step="100"></label>
+          <label>預測 (小時)<input id="hz" type="number" value="4" step="0.5"></label>
+          <button id="plan">產生路線</button>
+        </div>
+        <div id="kpi"></div>
+        <div id="routes"></div>
+      </section>
     </div>
-    <div class="card"><h2>事件</h2><table id="events"></table></div>
-    <div class="card"><h2>垃圾桶狀態 <small style="font-weight:400;color:#666">點一列看時間序列</small></h2><table id="bins"></table></div>
-    <div class="card">
-      <div class="hist-head"><h2 id="hist-title">感測數據</h2>
-        <button class="ghost" data-h="1">1 小時</button><button class="ghost" data-h="6">6 小時</button><button class="ghost" data-h="24">24 小時</button></div>
-      <div id="hist-wrap"><canvas id="hist"></canvas></div>
-      <p id="hist-now"></p>
-    </div>
-  </aside>
-</main>
+  </div>
+</div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/chart.js@4.4.1/dist/chart.umd.js"></script>
 <script>
@@ -69,6 +174,8 @@ const C={available:'#1f6f4a',near_full:'#c98a00',full:'#c0392b',offline:'#6b7280
 const STATE={available:'有空位',near_full:'快滿',full:'已滿',offline:'離線',fault:'感測被擋'};
 const EVT={overflow:'桶滿外溢',illegal_dumping:'違規傾倒',bag_rejected:'拒收垃圾袋',sensor_blocked:'感測器遮擋',
   ground_waste:'地面垃圾',ground_waste_unknown:'地面垃圾',fire_smoke:'煙霧',tamper:'破壞'};
+const EVT_HINT={overflow:'桶滿外溢到地面，需加收',illegal_dumping:'桶未滿但有人丟在地上',bag_rejected:'閘門擋下家用垃圾袋',
+  sensor_blocked:'超音波被擋住，順路檢查',ground_waste_unknown:'地面有垃圾',fire_smoke:'偵測到煙霧',tamper:'疑似遭破壞'};
 const warn=b=>(b.open_events||[]).map(t=>EVT[t]||t).join('、');  // 未處理事件 → 桶要顯示警示
 const VCOL=['#2563eb','#db2777','#ea580c','#0891b2','#65a30d'];
 let TOKEN=sessionStorage.getItem('adm')||prompt('Admin token');
@@ -78,47 +185,105 @@ const H={'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 // ?demo=1：現場 Demo 用，每 5 秒更新並把地圖移到 NTNU-01（?bin= 可換桶）；平常 30 秒
 const Q=new URLSearchParams(location.search), DEMO=Q.get('demo')==='1', FOCUS=Q.get('bin')||'NTNU-01';
+const PERIOD=DEMO?5000:30000;
 let focused=false;
 const ago=t=>{if(t==null)return'-';const s=Math.max(0,Date.now()/1000-t);
   return s<60?`${Math.round(s)} 秒前`:s<3600?`${Math.floor(s/60)} 分前`:new Date(t*1000).toLocaleString()};
+const cm=mm=>mm==null?'-':(mm/10).toFixed(1);
+const pill=s=>`<span class="pill" style="background:${C[s]||'#999'}">${STATE[s]||esc(s)}</span>`;
+const num=v=>v==null?'-':(+v).toFixed(v%1?1:0);
 
 const map=L.map('map').setView([25.0215,121.5310],15);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
 const binLayer=L.layerGroup().addTo(map), routeLayer=L.layerGroup().addTo(map);
 
+let histBin=null, histHours=1, binsById={}, chart=null, filter='all', lastOk=0;
+
+function renderKpis(bins, openEv){
+  const n=s=>bins.filter(b=>b.state===s).length;
+  const k=[['垃圾桶',bins.length,'#94a3b8'],['已滿',n('full'),C.full],['快滿',n('near_full'),C.near_full],
+    ['未處理事件',openEv,'#ef4444'],['離線／被擋',n('offline')+n('fault'),C.fault]];
+  document.getElementById('kpis').innerHTML=k.map(([t,v,c])=>`<div class="kpi" style="border-left-color:${c}"><b>${v}</b><span>${t}</span></div>`).join('');
+}
+function renderBins(bins){
+  const show=bins.filter(b=>filter==='all'||(filter==='full'&&b.state==='full')||
+    (filter==='attn'&&(warn(b)||['full','near_full','fault','offline'].includes(b.state))));
+  document.getElementById('bins').innerHTML=show.length?show.map(b=>{const w=warn(b), f=b.fill_pct??0;
+    return `<button class="bin${w?' warn':''}${b.id===histBin?' sel':''}" data-id="${esc(b.id)}">
+      <div class="r1"><b>${w?'⚠ ':''}${esc(b.id)}</b>${pill(b.state)}</div>
+      <div class="nm">${esc(b.name)}</div>
+      <div class="bar"><i style="width:${f}%;background:${C[b.state]||'#999'}"></i></div>
+      <div class="r3"><span><b>${num(b.fill_pct)}</b>%</span><span><b>${b.weight_g==null?'-':(b.weight_g/1000).toFixed(2)}</b> kg</span><span>${ago(b.last_seen)}</span></div>
+    </button>`}).join(''):'<div class="empty">沒有符合的桶</div>';
+}
 async function loadBins(signal){
   const r=await fetch('/api/admin/bins',{headers:H,signal});
-  if(!r.ok) return;  // token 錯誤由 loadEvents 提示並重新登入
+  if(!r.ok) return null;  // token 錯誤由 loadEvents 提示並重新登入
   const bins=await r.json();
-  if(signal.aborted) return;
+  if(signal.aborted) return null;
+  binsById=Object.fromEntries(bins.map(b=>[b.id,b]));
+  if(!histBin) histBin=(bins.find(b=>b.id===FOCUS)||bins[0])?.id||null;
   binLayer.clearLayers();
   if(DEMO&&!focused){
     const f=bins.find(b=>b.id===FOCUS);
     if(f){map.setView([f.lat,f.lng],17);focused=true}
   }
-  if(!histBin) histBin=(bins.find(b=>b.id===FOCUS)||bins[0])?.id||null;
-  binsById=Object.fromEntries(bins.map(b=>[b.id,b]));
-  document.getElementById('bins').innerHTML='<tr><th>ID</th><th>位置</th><th>狀態</th><th>%</th><th>重量(g)</th><th>距離(cm)</th><th>遮擋</th><th>滿前(h)</th><th>最後上傳</th></tr>'+
-    bins.map(b=>`<tr data-id="${esc(b.id)}" class="${warn(b)?'warn':''}${b.id===histBin?' sel':''}"><td>${warn(b)?'⚠ ':''}${esc(b.id)}</td><td>${esc(b.name)}</td><td><span class="pill" style="background:${C[b.state]}">${STATE[b.state]||esc(b.state)}</span></td>
-      <td>${b.fill_pct??'-'}</td><td>${b.weight_g??'-'}</td><td>${cm(b.dist_mm)}</td><td>${yn(b.blocked)}</td><td>${b.hours_to_full??'-'}</td><td>${ago(b.last_seen)}</td></tr>`).join('');
-  bins.forEach(b=>{const w=warn(b);
-    L.circleMarker([b.lat,b.lng],{radius:w?11:8,color:w?'#c0392b':'#fff',weight:w?4:2,fillColor:C[b.state],fillOpacity:.95})
-      .bindTooltip(`${esc(b.id)} ${esc(b.name)} ${STATE[b.state]||esc(b.state)} ${b.fill_pct??'-'}%${b.weight_g==null?'':` · ${b.weight_g}g`}`+
-        `${b.dist_mm==null?'':` · ${cm(b.dist_mm)} cm`}${b.blocked?' · 遮擋':''}${w?`<br>⚠ ${esc(w)}`:''}`)
+  renderBins(bins);
+  bins.forEach(b=>{const w=warn(b), sel=b.id===histBin;
+    L.circleMarker([b.lat,b.lng],{radius:sel?13:w?11:8,color:sel?'#111827':w?'#c0392b':'#fff',weight:sel||w?4:2,fillColor:C[b.state],fillOpacity:.95})
+      .bindTooltip(`<b>${esc(b.id)}</b> ${esc(b.name)}<br>${STATE[b.state]||esc(b.state)}・${num(b.fill_pct)}%${b.weight_g==null?'':`・${b.weight_g} g`}${w?`<br>⚠ ${esc(w)}`:''}`)
       .on('click',()=>selectBin(b.id)).addTo(binLayer)});
+  return bins;
 }
-// ---- 時間序列（#32）
-const cm=mm=>mm==null?'-':(mm/10).toFixed(1);
-const yn=v=>v==null?'-':v?'是':'否';
-let histBin=null, histHours=1, binsById={}, chart=null;
-document.getElementById('bins').onclick=e=>{const tr=e.target.closest('tr[data-id]'); if(tr) selectBin(tr.dataset.id)};
-document.querySelectorAll('.hist-head button').forEach(btn=>btn.onclick=()=>{histHours=+btn.dataset.h; loadHistory()});
+async function loadEvents(signal){
+  const r=await fetch('/api/events?limit=30',{headers:H,signal});
+  if(signal.aborted) return null;
+  if(r.status===401){sessionStorage.removeItem('adm');alert('token 錯誤');location.reload();return null}
+  if(!r.ok) return null;
+  const ev=await r.json();
+  if(signal.aborted) return null;
+  const open=ev.filter(e=>!e.resolved);
+  document.getElementById('ev-count').textContent=open.length?`${open.length} 件未處理`:'';
+  document.getElementById('events').innerHTML=ev.length?ev.map(e=>`<div class="ev${e.resolved?'':' open'}">
+    <span class="t">${new Date(e.ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>
+    <div class="m"><b>${EVT[e.type]||esc(e.type)}</b>・${esc(e.bin_id)}<small>${EVT_HINT[e.type]||''}</small></div>
+    ${e.resolved?'<span class="t">✓ 已處理</span>':`<button class="ghost" onclick="resolve(${e.id})">處理</button>`}</div>`).join('')
+    :'<div class="empty">目前沒有事件</div>';
+  return open.length;
+}
+
+// ---- 焦點桶＋時間序列（#32）
+document.getElementById('bins').onclick=e=>{const el=e.target.closest('.bin[data-id]'); if(el) selectBin(el.dataset.id)};
+document.getElementById('filters').onclick=e=>{const b=e.target.closest('button[data-f]'); if(!b) return;
+  filter=b.dataset.f; document.querySelectorAll('#filters button').forEach(x=>x.classList.toggle('on',x===b));
+  renderBins(Object.values(binsById))};
+document.querySelectorAll('#range button').forEach(btn=>btn.onclick=()=>{histHours=+btn.dataset.h; loadHistory()});
 function selectBin(id){
   histBin=id;
-  document.querySelectorAll('#bins tr[data-id]').forEach(tr=>tr.classList.toggle('sel',tr.dataset.id===id));
-  loadHistory();
+  document.querySelectorAll('.bin[data-id]').forEach(el=>el.classList.toggle('sel',el.dataset.id===id));
+  const b=binsById[id]; if(b) map.panTo([b.lat,b.lng]);
+  renderFocus(); loadHistory();
+  if(innerWidth<960) document.getElementById('focus').scrollIntoView({behavior:'smooth',block:'start'});
 }
-// 遮擋時段畫成灰底
+function renderFocus(){
+  const b=binsById[histBin]; if(!b) return;
+  document.getElementById('f-title').textContent=`${b.id}・${b.name}`;
+  document.getElementById('f-pill').innerHTML=pill(b.state);
+  const g=document.getElementById('f-gauge');
+  g.style.setProperty('--v',b.fill_pct??0); g.style.setProperty('--c',C[b.state]||'#999');
+  document.getElementById('f-fill').textContent=b.fill_pct==null?'--':`${Math.round(b.fill_pct)}%`;
+  document.getElementById('f-weight').textContent=b.weight_g==null?'-':`${(b.weight_g/1000).toFixed(2)} kg`;
+  document.getElementById('f-dist').textContent=b.dist_mm==null?'-':`${cm(b.dist_mm)} cm`;
+  document.getElementById('f-htf').textContent=b.hours_to_full==null?'-':b.hours_to_full<1?`${Math.round(b.hours_to_full*60)} 分`:`${(+b.hours_to_full).toFixed(1)} 小時`;
+  document.getElementById('f-seen').textContent=ago(b.last_seen);
+  const notes=[];
+  if(b.blocked) notes.push('⚠ 感測器被擋住，滿度可能不準');
+  if(warn(b)) notes.push(`⚠ 未處理：${warn(b)}`);
+  if(b.full_for_gate) notes.push('閘門已鎖定（桶滿不收）');
+  if(b.has_gate) notes.push('有視覺閘門');
+  document.getElementById('f-note').textContent=notes.join('　');
+}
+// 遮擋時段畫成紫色底
 const blockedBands={id:'blockedBands',beforeDatasetsDraw(c){
   const pts=c.$blocked||[], x=c.scales.x, a=c.chartArea; if(!pts.length) return;
   const ctx=c.ctx; ctx.save(); ctx.fillStyle='rgba(124,58,237,.13)';
@@ -132,47 +297,39 @@ function drawHistory(rows){
     if(start!=null&&(!r.blocked||i===rows.length-1)){bands.push([start,ms(r)]); start=null}});
   const tick=v=>{const d=new Date(v); return histHours>6?`${d.getMonth()+1}/${d.getDate()} ${d.toTimeString().slice(0,5)}`:d.toTimeString().slice(0,5)};
   const data={datasets:[
-    {label:'滿度 %',data:pt(r=>r.fill_pct),borderColor:'#1f6f4a',backgroundColor:'#1f6f4a',yAxisID:'pct'},
+    {label:'滿度 %',data:pt(r=>r.fill_pct),borderColor:'#1f6f4a',backgroundColor:'rgba(31,111,74,.12)',fill:true,yAxisID:'pct'},
     {label:'重量 g',data:pt(r=>r.weight_g),borderColor:'#c98a00',backgroundColor:'#c98a00',yAxisID:'g',spanGaps:false},
     {label:'距離 cm',data:pt(r=>r.dist_mm==null?null:r.dist_mm/10),borderColor:'#2563eb',backgroundColor:'#2563eb',yAxisID:'cm',borderDash:[5,4]}]};
-  data.datasets.forEach(d=>Object.assign(d,{pointRadius:rows.length>120?0:2,borderWidth:2,tension:.2}));
+  data.datasets.forEach(d=>Object.assign(d,{pointRadius:rows.length>120?0:2,borderWidth:2,tension:.25}));
   if(!chart){
     chart=new Chart(document.getElementById('hist'),{type:'line',data,plugins:[blockedBands],options:{
       animation:false,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
-      plugins:{legend:{labels:{boxWidth:10,font:{size:11}}},
+      plugins:{legend:{position:'bottom',labels:{boxWidth:10,font:{size:11}}},
         tooltip:{callbacks:{title:it=>new Date(it[0].parsed.x).toLocaleString(),
-          footer:it=>rows[it[0].dataIndex]?.blocked?'感測器遮擋':''}}},
-      scales:{x:{type:'linear',ticks:{callback:tick,maxTicksLimit:6,font:{size:10}}},
-        pct:{position:'left',min:0,max:100,title:{display:true,text:'%'}},
-        g:{position:'right',beginAtZero:true,title:{display:true,text:'g'},grid:{drawOnChartArea:false}},
-        cm:{position:'right',beginAtZero:true,title:{display:true,text:'cm'},grid:{drawOnChartArea:false}}}}});
+          footer:it=>chart.$rows?.[it[0].dataIndex]?.blocked?'感測器遮擋':''}}},
+      scales:{x:{type:'linear',ticks:{callback:tick,maxTicksLimit:5,font:{size:10}}},
+        pct:{position:'left',min:0,max:100,ticks:{font:{size:10}},title:{display:true,text:'%'}},
+        g:{position:'right',beginAtZero:true,ticks:{font:{size:10}},title:{display:true,text:'g'},grid:{drawOnChartArea:false}},
+        cm:{position:'right',beginAtZero:true,display:innerWidth>=420,ticks:{font:{size:10}},title:{display:true,text:'cm'},grid:{drawOnChartArea:false}}}}});
   }else{chart.data=data; chart.options.scales.x.ticks.callback=tick}
-  chart.$blocked=bands;
+  chart.$blocked=bands; chart.$rows=rows;
   chart.update();
 }
 async function loadHistory(signal){
-  document.querySelectorAll('.hist-head button').forEach(b=>b.classList.toggle('on',+b.dataset.h===histHours));
+  document.querySelectorAll('#range button').forEach(b=>b.classList.toggle('on',+b.dataset.h===histHours));
   if(!histBin) return;
-  const b=binsById[histBin];
-  document.getElementById('hist-title').textContent=`感測數據・${histBin}`;
-  document.getElementById('hist-now').textContent=b?`最新：滿度 ${b.fill_pct??'-'}%・重量 ${b.weight_g??'-'} g・距離 ${cm(b.dist_mm)} cm・遮擋 ${yn(b.blocked)}・${ago(b.last_seen)}`:'';
-  if(typeof Chart==='undefined'){document.getElementById('hist-now').textContent+='（圖表載入失敗）';return}
+  if(typeof Chart==='undefined'){document.getElementById('hist-wrap').innerHTML='<p class="empty">圖表載入失敗</p>';return}
   const r=await fetch(`/api/bins/${encodeURIComponent(histBin)}/history?hours=${histHours}`,{headers:H,signal});
   if(!r.ok||signal?.aborted) return;
   const rows=await r.json();
   if(signal?.aborted) return;
   drawHistory(rows);
 }
-async function loadEvents(signal){
-  const r=await fetch('/api/events?limit=30',{headers:H,signal});
-  if(signal.aborted) return;
-  if(r.status===401){sessionStorage.removeItem('adm');alert('token 錯誤');location.reload();return}
-  if(!r.ok) return;
-  const ev=await r.json();
-  if(signal.aborted) return;
-  document.getElementById('events').innerHTML=ev.length?ev.map(e=>`<tr><td>${new Date(e.ts*1000).toLocaleTimeString()}</td>
-    <td>${esc(e.bin_id)}</td><td>${EVT[e.type]||esc(e.type)}</td>
-    <td>${e.resolved?'✓':`<button class="ghost" onclick="resolve(${e.id})">處理</button>`}</td></tr>`).join(''):'<tr><td>無</td></tr>';
+
+function setLive(){
+  const el=document.getElementById('live'), stale=Date.now()-lastOk>PERIOD*3;
+  el.classList.toggle('stale',stale);
+  el.innerHTML=`<i></i>${lastOk?(stale?'連線中斷':'即時・'+new Date(lastOk).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})):'連線中…'}`;
 }
 let poll=null;
 async function refresh(){
@@ -180,10 +337,12 @@ async function refresh(){
   const controller=new AbortController();
   poll=controller;
   const timeout=setTimeout(()=>controller.abort(),15000);
-  await Promise.allSettled([loadBins(controller.signal),loadEvents(controller.signal)]);
+  const [b,e]=await Promise.allSettled([loadBins(controller.signal),loadEvents(controller.signal)]);
+  if(b.value){renderKpis(b.value, e.value??0); renderFocus(); lastOk=Date.now()}
   if(!controller.signal.aborted) await loadHistory(controller.signal).catch(()=>{});
   clearTimeout(timeout);
   if(poll===controller) poll=null;
+  setLive();
 }
 
 async function resolve(id){
@@ -199,27 +358,31 @@ async function resolve(id){
 }
 
 document.getElementById('plan').onclick=async()=>{
-  const body={vehicles:+veh.value,vehicle_capacity_l:+cap.value,horizon_h:+hz.value};
-  const r=await fetch('/api/dispatch/plan',{method:'POST',headers:H,body:JSON.stringify(body)});
-  if(!r.ok){alert(await r.text());return}
-  const p=await r.json();
-  routeLayer.clearLayers();
-  L.marker([p.depot.lat,p.depot.lng]).bindTooltip('清潔隊').addTo(routeLayer);
-  const stops=p.routes.reduce((n,x)=>n+x.path.length-2,0);
-  document.getElementById('kpi').innerHTML=`<div><b>${(p.total_m/1000).toFixed(1)} km</b><span>動態路線</span></div>
-    <div><b>${(p.baseline_m/1000).toFixed(1)} km</b><span>固定排程</span></div>
-    <div><b>${p.saving_pct}%</b><span>節省・${stops} 站</span></div>`;
-  document.getElementById('routes').innerHTML=p.routes.map(rt=>`<p style="margin:8px 0 0;font-size:13px;color:${VCOL[rt.vehicle%5]}">
-    <b>車 ${rt.vehicle+1}</b>・${(rt.distance_m/1000).toFixed(1)} km・載量約 ${rt.load_l} L</p>
-    <ol>${rt.path.filter(s=>!s.depot).map(s=>`<li>${esc(s.name)}<br><small>${esc(s.reason)}</small></li>`).join('')}</ol>`).join('')
-    +(p.skipped.length?`<p style="font-size:12px;color:#666">未排入：${p.skipped.join(', ')}</p>`:'');
-  p.routes.forEach(rt=>{
-    L.polyline(rt.path.map(s=>[s.lat,s.lng]),{color:VCOL[rt.vehicle%5],weight:4,opacity:.85}).addTo(routeLayer);
-    rt.path.filter(s=>!s.depot).forEach((s,i)=>L.marker([s.lat,s.lng],{icon:L.divIcon({className:'',
-      html:`<div style="background:${VCOL[rt.vehicle%5]};color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;font-size:12px;font-weight:700">${i+1}</div>`})}).addTo(routeLayer));
-  });
+  const btn=document.getElementById('plan'); btn.disabled=true; btn.textContent='計算中…';
+  try{
+    const body={vehicles:+veh.value,vehicle_capacity_l:+cap.value,horizon_h:+hz.value};
+    const r=await fetch('/api/dispatch/plan',{method:'POST',headers:H,body:JSON.stringify(body)});
+    if(!r.ok){alert(await r.text());return}
+    const p=await r.json();
+    routeLayer.clearLayers();
+    L.marker([p.depot.lat,p.depot.lng]).bindTooltip('清潔隊').addTo(routeLayer);
+    const stops=p.routes.reduce((n,x)=>n+x.path.length-2,0);
+    document.getElementById('kpi').innerHTML=`<div class="routekpi"><div><b>${(p.total_m/1000).toFixed(1)} km</b><span>動態路線</span></div>
+      <div><b>${(p.baseline_m/1000).toFixed(1)} km</b><span>固定排程</span></div>
+      <div><b style="color:var(--g)">${p.saving_pct}%</b><span>節省・${stops} 站</span></div></div>`;
+    document.getElementById('routes').innerHTML=p.routes.map(rt=>`<p style="margin:10px 0 0;font-size:13px;color:${VCOL[rt.vehicle%5]}">
+      <b>車 ${rt.vehicle+1}</b>・${(rt.distance_m/1000).toFixed(1)} km・載量約 ${rt.load_l} L</p>
+      <ol>${rt.path.filter(s=>!s.depot).map(s=>`<li>${esc(s.name)}<br><small style="color:var(--muted)">${esc(s.reason)}</small></li>`).join('')}</ol>`).join('')
+      +(p.skipped.length?`<p class="note">未排入：${p.skipped.join(', ')}</p>`:'');
+    p.routes.forEach(rt=>{
+      L.polyline(rt.path.map(s=>[s.lat,s.lng]),{color:VCOL[rt.vehicle%5],weight:4,opacity:.85}).addTo(routeLayer);
+      rt.path.filter(s=>!s.depot).forEach((s,i)=>L.marker([s.lat,s.lng],{icon:L.divIcon({className:'',
+        html:`<div style="background:${VCOL[rt.vehicle%5]};color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;font-size:12px;font-weight:700">${i+1}</div>`})}).addTo(routeLayer));
+    });
+    if(innerWidth<960) document.getElementById('map').scrollIntoView({behavior:'smooth'});
+  }finally{btn.disabled=false; btn.textContent='產生路線'}
 };
-refresh();setInterval(refresh,DEMO?5000:30000);
+refresh();setInterval(refresh,PERIOD);setInterval(setLive,5000);
 </script>
 </body>
 </html>
