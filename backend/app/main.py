@@ -167,6 +167,10 @@ def _all_bins() -> list[dict]:
     with db.conn() as c:
         bins = [dict(r) for r in c.execute(
             "SELECT id,name,lat,lng,capacity_l,depth_mm,has_gate FROM bins ORDER BY id")]
+        # 最新一筆原始讀值（調度台顯示用，不進 PUBLIC_FIELDS）
+        raw = {r["bin_id"]: r for r in c.execute(
+            "SELECT t.bin_id, t.dist_mm, t.blocked FROM telemetry t JOIN "
+            "(SELECT bin_id, max(id) AS id FROM telemetry GROUP BY bin_id) m ON t.id = m.id")}
         evs = c.execute("SELECT bin_id, type FROM events WHERE resolved=0 AND ts>?",
                         (time.time() - 24 * 3600,)).fetchall()
     open_ev: dict[str, list[str]] = {}
@@ -179,7 +183,28 @@ def _all_bins() -> list[dict]:
                  hours_to_full=st.hours_to_full, last_seen=st.last_seen,
                  weight_g=st.weight_g, full_for_gate=st.full_for_gate,
                  open_events=open_ev.get(b["id"], []), has_gate=bool(b["has_gate"]))
+        r = raw.get(b["id"])
+        b.update(dist_mm=r["dist_mm"] if r else None, blocked=bool(r["blocked"]) if r else None)
     return bins
+
+
+HISTORY_MAX_HOURS = 168
+
+
+def telemetry_history(bin_id: str, hours: float, max_points: int, now: float | None = None) -> list[dict]:
+    """最近 hours 小時的 telemetry，依時間排序；超過 max_points 就等距抽樣（保留最後一筆）。"""
+    now = now or time.time()
+    with db.conn() as c:
+        if not c.execute("SELECT 1 FROM bins WHERE id=?", (bin_id,)).fetchone():
+            raise HTTPException(404, "unknown bin")
+        rows = c.execute(
+            "SELECT ts, fill_pct, dist_mm, weight_g, blocked FROM telemetry "
+            "WHERE bin_id=? AND ts>=? ORDER BY ts, id", (bin_id, now - hours * 3600)).fetchall()
+    if len(rows) > max_points:
+        step = len(rows) / max_points
+        picked = [rows[int(i * step)] for i in range(max_points - 1)]
+        rows = picked + [rows[-1]]
+    return [dict(r, blocked=bool(r["blocked"])) for r in rows]
 
 
 # ---------------------------------------------------------------- routes: devices
@@ -211,6 +236,13 @@ def list_events(since: float = 0, limit: int = Query(100, le=1000)):
     with db.conn() as c:
         rows = c.execute("SELECT * FROM events WHERE ts>? ORDER BY ts DESC LIMIT ?", (since, limit)).fetchall()
     return [dict(r, detail=json.loads(r["detail"] or "{}")) for r in rows]
+
+
+@app.get("/api/bins/{bin_id}/history", dependencies=[Depends(require_admin)])
+def bin_history(bin_id: str, hours: float = Query(1, gt=0, le=HISTORY_MAX_HOURS),
+                max_points: int = Query(300, ge=2, le=2000)):
+    """調度台時間序列圖用。含 dist_mm 等原始讀值，所以只給 admin。"""
+    return telemetry_history(bin_id, hours, max_points)
 
 
 @app.post("/api/events/{event_id}/resolve", status_code=204, dependencies=[Depends(require_admin)])
@@ -250,7 +282,7 @@ def list_bins():
 
 @app.get("/api/admin/bins", dependencies=[Depends(require_admin)])
 def list_bins_admin():
-    """調度台用：多了 last_seen、open_events 等不給市民看的欄位。"""
+    """調度台用：多了 last_seen、open_events、dist_mm、blocked 等不給市民看的欄位。"""
     return _all_bins()
 
 
