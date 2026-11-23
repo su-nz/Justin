@@ -28,10 +28,18 @@
   button{padding:7px 12px;border:0;border-radius:8px;background:#1f6f4a;color:#fff;font-weight:600;cursor:pointer}
   button.ghost{background:#eee;color:#111}
   ol{padding-left:20px;margin:6px 0;font-size:13px}
+  #bins tr[data-id]{cursor:pointer}
+  #bins tr.sel td{outline:2px solid #1f6f4a;outline-offset:-2px}
+  .hist-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+  .hist-head h2{margin:0;flex:1}
+  .hist-head button{padding:4px 9px;font-size:12px}
+  .hist-head button.on{background:#1f6f4a;color:#fff}
+  #hist-wrap{position:relative;height:220px}
+  #hist-now{font-size:12px;color:#444;margin:6px 0 0}
 </style>
 </head>
 <body>
-<header><h1>Smart Bin 清運調度台</h1><button class="ghost" id="logout">登出</button></header>
+<header><h1>Smart Bin 清運調度台</h1><a href="/static/flow.html" style="color:#cfe9dc;font-size:14px">系統流程圖</a><button class="ghost" id="logout">登出</button></header>
 <main>
   <div id="map"></div>
   <aside>
@@ -45,10 +53,17 @@
       <div id="routes"></div>
     </div>
     <div class="card"><h2>事件</h2><table id="events"></table></div>
-    <div class="card"><h2>垃圾桶狀態</h2><table id="bins"></table></div>
+    <div class="card"><h2>垃圾桶狀態 <small style="font-weight:400;color:#666">點一列看時間序列</small></h2><table id="bins"></table></div>
+    <div class="card">
+      <div class="hist-head"><h2 id="hist-title">感測數據</h2>
+        <button class="ghost" data-h="1">1 小時</button><button class="ghost" data-h="6">6 小時</button><button class="ghost" data-h="24">24 小時</button></div>
+      <div id="hist-wrap"><canvas id="hist"></canvas></div>
+      <p id="hist-now"></p>
+    </div>
   </aside>
 </main>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/chart.js@4.4.1/dist/chart.umd.js"></script>
 <script>
 const C={available:'#1f6f4a',near_full:'#c98a00',full:'#c0392b',offline:'#6b7280',fault:'#7c3aed'};
 const STATE={available:'有空位',near_full:'快滿',full:'已滿',offline:'離線',fault:'感測被擋'};
@@ -81,12 +96,72 @@ async function loadBins(signal){
     const f=bins.find(b=>b.id===FOCUS);
     if(f){map.setView([f.lat,f.lng],17);focused=true}
   }
-  document.getElementById('bins').innerHTML='<tr><th>ID</th><th>位置</th><th>狀態</th><th>%</th><th>重量(g)</th><th>滿前(h)</th><th>最後上傳</th></tr>'+
-    bins.map(b=>`<tr${warn(b)?' class="warn"':''}><td>${warn(b)?'⚠ ':''}${esc(b.id)}</td><td>${esc(b.name)}</td><td><span class="pill" style="background:${C[b.state]}">${STATE[b.state]||esc(b.state)}</span></td>
-      <td>${b.fill_pct??'-'}</td><td>${b.weight_g??'-'}</td><td>${b.hours_to_full??'-'}</td><td>${ago(b.last_seen)}</td></tr>`).join('');
+  if(!histBin) histBin=(bins.find(b=>b.id===FOCUS)||bins[0])?.id||null;
+  binsById=Object.fromEntries(bins.map(b=>[b.id,b]));
+  document.getElementById('bins').innerHTML='<tr><th>ID</th><th>位置</th><th>狀態</th><th>%</th><th>重量(g)</th><th>距離(cm)</th><th>遮擋</th><th>滿前(h)</th><th>最後上傳</th></tr>'+
+    bins.map(b=>`<tr data-id="${esc(b.id)}" class="${warn(b)?'warn':''}${b.id===histBin?' sel':''}"><td>${warn(b)?'⚠ ':''}${esc(b.id)}</td><td>${esc(b.name)}</td><td><span class="pill" style="background:${C[b.state]}">${STATE[b.state]||esc(b.state)}</span></td>
+      <td>${b.fill_pct??'-'}</td><td>${b.weight_g??'-'}</td><td>${cm(b.dist_mm)}</td><td>${yn(b.blocked)}</td><td>${b.hours_to_full??'-'}</td><td>${ago(b.last_seen)}</td></tr>`).join('');
   bins.forEach(b=>{const w=warn(b);
     L.circleMarker([b.lat,b.lng],{radius:w?11:8,color:w?'#c0392b':'#fff',weight:w?4:2,fillColor:C[b.state],fillOpacity:.95})
-      .bindTooltip(`${esc(b.id)} ${esc(b.name)} ${STATE[b.state]||esc(b.state)} ${b.fill_pct??'-'}%${b.weight_g==null?'':` · ${b.weight_g}g`}${w?`<br>⚠ ${esc(w)}`:''}`).addTo(binLayer)});
+      .bindTooltip(`${esc(b.id)} ${esc(b.name)} ${STATE[b.state]||esc(b.state)} ${b.fill_pct??'-'}%${b.weight_g==null?'':` · ${b.weight_g}g`}`+
+        `${b.dist_mm==null?'':` · ${cm(b.dist_mm)} cm`}${b.blocked?' · 遮擋':''}${w?`<br>⚠ ${esc(w)}`:''}`)
+      .on('click',()=>selectBin(b.id)).addTo(binLayer)});
+}
+// ---- 時間序列（#32）
+const cm=mm=>mm==null?'-':(mm/10).toFixed(1);
+const yn=v=>v==null?'-':v?'是':'否';
+let histBin=null, histHours=1, binsById={}, chart=null;
+document.getElementById('bins').onclick=e=>{const tr=e.target.closest('tr[data-id]'); if(tr) selectBin(tr.dataset.id)};
+document.querySelectorAll('.hist-head button').forEach(btn=>btn.onclick=()=>{histHours=+btn.dataset.h; loadHistory()});
+function selectBin(id){
+  histBin=id;
+  document.querySelectorAll('#bins tr[data-id]').forEach(tr=>tr.classList.toggle('sel',tr.dataset.id===id));
+  loadHistory();
+}
+// 遮擋時段畫成灰底
+const blockedBands={id:'blockedBands',beforeDatasetsDraw(c){
+  const pts=c.$blocked||[], x=c.scales.x, a=c.chartArea; if(!pts.length) return;
+  const ctx=c.ctx; ctx.save(); ctx.fillStyle='rgba(124,58,237,.13)';
+  pts.forEach(([t0,t1])=>{const x0=x.getPixelForValue(t0), x1=Math.max(x.getPixelForValue(t1),x0+3);
+    ctx.fillRect(x0,a.top,x1-x0,a.bottom-a.top)});
+  ctx.restore()}};
+function drawHistory(rows){
+  const ms=r=>r.ts*1000, pt=f=>rows.map(r=>({x:ms(r),y:f(r)}));
+  const bands=[]; let start=null;
+  rows.forEach((r,i)=>{if(r.blocked&&start==null) start=ms(r);
+    if(start!=null&&(!r.blocked||i===rows.length-1)){bands.push([start,ms(r)]); start=null}});
+  const tick=v=>{const d=new Date(v); return histHours>6?`${d.getMonth()+1}/${d.getDate()} ${d.toTimeString().slice(0,5)}`:d.toTimeString().slice(0,5)};
+  const data={datasets:[
+    {label:'滿度 %',data:pt(r=>r.fill_pct),borderColor:'#1f6f4a',backgroundColor:'#1f6f4a',yAxisID:'pct'},
+    {label:'重量 g',data:pt(r=>r.weight_g),borderColor:'#c98a00',backgroundColor:'#c98a00',yAxisID:'g',spanGaps:false},
+    {label:'距離 cm',data:pt(r=>r.dist_mm==null?null:r.dist_mm/10),borderColor:'#2563eb',backgroundColor:'#2563eb',yAxisID:'cm',borderDash:[5,4]}]};
+  data.datasets.forEach(d=>Object.assign(d,{pointRadius:rows.length>120?0:2,borderWidth:2,tension:.2}));
+  if(!chart){
+    chart=new Chart(document.getElementById('hist'),{type:'line',data,plugins:[blockedBands],options:{
+      animation:false,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      plugins:{legend:{labels:{boxWidth:10,font:{size:11}}},
+        tooltip:{callbacks:{title:it=>new Date(it[0].parsed.x).toLocaleString(),
+          footer:it=>rows[it[0].dataIndex]?.blocked?'感測器遮擋':''}}},
+      scales:{x:{type:'linear',ticks:{callback:tick,maxTicksLimit:6,font:{size:10}}},
+        pct:{position:'left',min:0,max:100,title:{display:true,text:'%'}},
+        g:{position:'right',beginAtZero:true,title:{display:true,text:'g'},grid:{drawOnChartArea:false}},
+        cm:{position:'right',beginAtZero:true,title:{display:true,text:'cm'},grid:{drawOnChartArea:false}}}}});
+  }else{chart.data=data; chart.options.scales.x.ticks.callback=tick}
+  chart.$blocked=bands;
+  chart.update();
+}
+async function loadHistory(signal){
+  document.querySelectorAll('.hist-head button').forEach(b=>b.classList.toggle('on',+b.dataset.h===histHours));
+  if(!histBin) return;
+  const b=binsById[histBin];
+  document.getElementById('hist-title').textContent=`感測數據・${histBin}`;
+  document.getElementById('hist-now').textContent=b?`最新：滿度 ${b.fill_pct??'-'}%・重量 ${b.weight_g??'-'} g・距離 ${cm(b.dist_mm)} cm・遮擋 ${yn(b.blocked)}・${ago(b.last_seen)}`:'';
+  if(typeof Chart==='undefined'){document.getElementById('hist-now').textContent+='（圖表載入失敗）';return}
+  const r=await fetch(`/api/bins/${encodeURIComponent(histBin)}/history?hours=${histHours}`,{headers:H,signal});
+  if(!r.ok||signal?.aborted) return;
+  const rows=await r.json();
+  if(signal?.aborted) return;
+  drawHistory(rows);
 }
 async function loadEvents(signal){
   const r=await fetch('/api/events?limit=30',{headers:H,signal});
@@ -106,6 +181,7 @@ async function refresh(){
   poll=controller;
   const timeout=setTimeout(()=>controller.abort(),15000);
   await Promise.allSettled([loadBins(controller.signal),loadEvents(controller.signal)]);
+  if(!controller.signal.aborted) await loadHistory(controller.signal).catch(()=>{});
   clearTimeout(timeout);
   if(poll===controller) poll=null;
 }

@@ -109,6 +109,17 @@ python3 edge/pi-demo/node_pi.py --depth-cm 30
 
 LCD 第二行會顯示擋板狀態（#36）：`gate.py` 開閘、拒收時寫入 `GATE_STATUS_FILE`（預設 `/tmp/smartbin-gate.json`），`node_pi.py` 每 0.5 秒讀一次，在重量後面顯示 `OPEN`（最多 15 秒）或 `REJECT`（5 秒），比 `BLOCKED` 優先。兩支程式的 `GATE_STATUS_FILE` 要設成同一個檔案；設成空字串就停用。
 
+**開機自動啟動**：用 `edge/pi-demo/smartbin-node.service`。設定寫在 `/etc/smartbin/node.env`，token 不進 repo。LCD 位址是 0x3f 時設 `LCD_ADDR=0x3f`。
+```bash
+sudo useradd -r -s /usr/sbin/nologin -G gpio,i2c smartbin
+sudo mkdir -p /opt/smartbin /etc/smartbin && sudo cp edge/pi-demo/node_pi.py /opt/smartbin/
+sudo nano /etc/smartbin/node.env      # SMARTBIN_API=… BIN_ID=… DEVICE_TOKEN=… HX711_OFFSET=… HX711_SCALE=… DEPTH_CM=… LCD_ADDR=…
+sudo chmod 600 /etc/smartbin/node.env
+sudo cp edge/pi-demo/smartbin-node.service /etc/systemd/system/ && sudo systemctl enable --now smartbin-node
+journalctl -u smartbin-node -f        # 每輪出現「已上傳」
+```
+`smartbin` 使用者要能 import `httpx`、`RPLCD`：requirements 用 `sudo pip install --break-system-packages` 裝到系統，或改 `ExecStart` 指到 venv 的 python。
+
 ## 視覺閘門（edge/vision-gate）
 
 攝影機架在桶上方往下看，一個畫面切兩個 ROI：投入口（拒收大袋 / 小垃圾才開閘、有手不關閘）與地面（覆蓋率連續兩次 ≥5% → `ground_waste`）。只上傳事件，不上傳影像。
@@ -152,7 +163,8 @@ python edge/vision-gate/gate.py --backend onnx --model yolo11n.onnx --labels coc
 | POST | `/api/telemetry`、`/api/events` | `X-Device-Token` |
 | GET | `/api/bins`、`/api/nearest?lat=&lng=` | 公開 |
 | POST | `/api/bins`、`/api/dispatch/plan`、`/api/events/{id}/resolve` | `Authorization: Bearer <ADMIN_TOKEN>` |
-| GET | `/api/events`、`/api/dispatch/latest`、`/api/admin/bins`（調度台用，多 `last_seen`、`open_events`） | admin |
+| GET | `/api/events`、`/api/dispatch/latest`、`/api/admin/bins`（調度台用，多 `last_seen`、`open_events`、最新原始讀值 `dist_mm`、`blocked`） | admin |
+| GET | `/api/bins/{id}/history?hours=1&max_points=300`（最近 N 小時 telemetry，依時間排序；`hours` ≤ 168，點數超過 `max_points` 會等距抽樣並保留最後一筆） | admin |
 | POST | `/line/webhook` | LINE 簽章驗證 |
 
 ## 下一步

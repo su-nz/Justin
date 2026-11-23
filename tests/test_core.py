@@ -405,3 +405,54 @@ def test_gate_writes_status_file_for_lcd(tmp_path):
     assert json.loads(f.read_text()) == {"state": "reject", "ts": 123.0}
     gate.write_gate_status(str(tmp_path / "no" / "dir.json"), "open")   # 寫不進去不丟例外
     gate.write_gate_status("", "open")
+def _history_client(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "h.db"))
+    return TestClient(main.app), {"Authorization": f"Bearer {main.ADMIN_TOKEN}"}
+
+
+def test_history_is_admin_only_sorted_and_windowed(tmp_path, monkeypatch):
+    cl, adm = _history_client(tmp_path, monkeypatch)
+    with cl:
+        cl.post("/api/bins", headers=adm, json={"id": "NTNU-01", "name": "x", "lat": 25.0, "lng": 121.5})
+        now = time.time()
+        with db.conn() as c:
+            for ts, f, d, w, b in [(now - 30, 50, 150, None, 1), (now - 2 * 3600, 10, 270, 100, 0),
+                                   (now - 600, 40, 180, 300, 0)]:
+                c.execute("INSERT INTO telemetry(bin_id,ts,fill_pct,dist_mm,weight_g,blocked) VALUES(?,?,?,?,?,?)",
+                          ("NTNU-01", ts, f, d, w, b))
+        assert cl.get("/api/bins/NTNU-01/history").status_code == 401
+        h = cl.get("/api/bins/NTNU-01/history?hours=1", headers=adm).json()
+        assert [p["fill_pct"] for p in h] == [40, 50]          # 2 小時前那筆在範圍外，依時間排序
+        assert h[-1] == {"ts": h[-1]["ts"], "fill_pct": 50, "dist_mm": 150, "weight_g": None, "blocked": True}
+        assert len(cl.get("/api/bins/NTNU-01/history?hours=3", headers=adm).json()) == 3
+        assert cl.get("/api/bins/NOPE/history", headers=adm).status_code == 404
+        assert cl.get("/api/bins/NTNU-01/history?hours=1000", headers=adm).status_code == 422
+
+
+def test_history_downsamples_but_keeps_latest(tmp_path, monkeypatch):
+    cl, adm = _history_client(tmp_path, monkeypatch)
+    with cl:
+        cl.post("/api/bins", headers=adm, json={"id": "NTNU-01", "name": "x", "lat": 25.0, "lng": 121.5})
+        now = time.time()
+        with db.conn() as c:
+            c.executemany("INSERT INTO telemetry(bin_id,ts,fill_pct) VALUES(?,?,?)",
+                          [("NTNU-01", now - 3000 + i, i % 100) for i in range(1000)])
+        h = cl.get("/api/bins/NTNU-01/history?hours=1&max_points=50", headers=adm).json()
+        assert len(h) == 50
+        assert h[-1]["ts"] == now - 3000 + 999
+        assert all(a["ts"] < b["ts"] for a, b in zip(h, h[1:]))
+
+
+def test_admin_bins_show_latest_raw_reading_but_public_does_not(tmp_path, monkeypatch):
+    cl, adm = _history_client(tmp_path, monkeypatch)
+    with cl:
+        tok = cl.post("/api/bins", headers=adm, json={"id": "NTNU-01", "name": "x", "lat": 25.0, "lng": 121.5}).json()["device_token"]
+        cl.post("/api/bins", headers=adm, json={"id": "EMPTY", "name": "y", "lat": 25.0, "lng": 121.5})
+        for body in ({"fill_pct": 20, "dist_mm": 240}, {"fill_pct": 90, "dist_mm": 30, "blocked": True}):
+            cl.post("/api/telemetry", headers={"X-Device-Token": tok}, json={"bin_id": "NTNU-01", **body})
+        full = {b["id"]: b for b in cl.get("/api/admin/bins", headers=adm).json()}
+        assert full["NTNU-01"]["dist_mm"] == 30 and full["NTNU-01"]["blocked"] is True
+        assert full["EMPTY"]["dist_mm"] is None and full["EMPTY"]["blocked"] is None
+        pub = cl.get("/api/bins").json()[0]
+        assert "dist_mm" not in pub and "blocked" not in pub
