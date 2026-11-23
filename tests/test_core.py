@@ -405,6 +405,8 @@ def test_gate_writes_status_file_for_lcd(tmp_path):
     assert json.loads(f.read_text()) == {"state": "reject", "ts": 123.0}
     gate.write_gate_status(str(tmp_path / "no" / "dir.json"), "open")   # 寫不進去不丟例外
     gate.write_gate_status("", "open")
+
+
 def _history_client(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "h.db"))
@@ -456,3 +458,41 @@ def test_admin_bins_show_latest_raw_reading_but_public_does_not(tmp_path, monkey
         assert full["EMPTY"]["dist_mm"] is None and full["EMPTY"]["blocked"] is None
         pub = cl.get("/api/bins").json()[0]
         assert "dist_mm" not in pub and "blocked" not in pub
+
+
+def test_servo_detaches_after_settle_and_new_move_cancels_it(monkeypatch):
+    made, _ = _fake_gpiozero(monkeypatch, pigpio_ok=False)
+    timers = []
+
+    class FakeTimer:
+        def __init__(self, delay, fn):
+            self.delay, self.fn, self.cancelled = delay, fn, False
+            timers.append(self)
+        def start(self):
+            pass
+        def cancel(self):
+            self.cancelled = True
+
+    monkeypatch.setattr(gate.threading, "Timer", FakeTimer)
+    cfg = gate.Cfg()
+    act = gate.Actuators(cfg, dry=False)
+    servo = made["AngularServo"][0]
+    act.open()
+    assert timers[-1].delay == cfg.servo_settle_s and not timers[-1].cancelled
+    act.close()                       # 新動作取消上一個 detach，避免轉到一半被放掉
+    assert timers[-2].cancelled and not timers[-1].cancelled
+    timers[-1].fn()                   # 時間到 → 停 PWM
+    assert servo.events[-1][0] == "detach"
+    act.open()                        # detach 後再設定角度仍然有效
+    assert servo.angle == cfg.servo_open_angle
+
+
+def test_servo_hold_keeps_pwm(monkeypatch):
+    made, _ = _fake_gpiozero(monkeypatch, pigpio_ok=False)
+    started = []
+    monkeypatch.setattr(gate.threading, "Timer", lambda *a: started.append(a))
+    cfg = gate.Cfg()
+    cfg.servo_hold = True
+    act = gate.Actuators(cfg, dry=False)
+    act.open(); act.close()
+    assert started == []
