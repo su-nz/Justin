@@ -127,10 +127,11 @@ document.getElementById('go').onclick=async()=>{
 };
 
 // ?live=1：每秒更新（#43）
-const PERIOD=Q.get('live')==='1'?1000:DEMO?5000:60000;
+// 預設每秒更新（#49）；?period=秒數 可以自訂
+const PERIOD=Math.max(1,+Q.get('period')||1)*1000;
 let updAt='', nextAt=0, loading=false;
 async function tick(force){
-  if(loading||(!force&&Date.now()<nextAt)) return showUpd();
+  if(loading||(!force&&(document.hidden||Date.now()<nextAt))) return showUpd();  // 背景分頁不更新
   loading=true; document.getElementById('reload').disabled=true; showUpd();
   try{await loadBins()}catch{} finally{
     loading=false; nextAt=Date.now()+PERIOD; document.getElementById('reload').disabled=false; showUpd()}
@@ -140,6 +141,7 @@ function showUpd(){
   document.getElementById('upd').textContent=loading?'・更新中…':`・${updAt}・${left} 秒後更新`;
 }
 document.getElementById('reload').onclick=()=>tick(true);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden) tick(true)});
 tick(true); setInterval(()=>tick(false),250);
 if('serviceWorker' in navigator) navigator.serviceWorker.register('/static/sw.js');
 </script>

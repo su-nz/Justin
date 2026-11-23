@@ -107,7 +107,7 @@ python3 edge/pi-demo/node_pi.py --depth-cm 30
 ```
 筆電測試用 `--dry`（假距離、假重量，不碰 GPIO）；沒接秤用 `--no-scale`。HX711 讀不到時該輪不送 `weight_g`，其他照常上傳。重量絕對值小於 50 g 會當作 0（空秤零點漂移，#46），用 `--zero-band-g` 或 `HX711_ZERO_BAND_G` 調整，0 = 停用。
 
-**接近即時（#43）**：`--fast --interval 1` 每輪只取超音波 5 筆、HX711 4 筆（約 0.6 秒），LCD 和上傳約每秒一次；可以用 `--sonar-samples`、`--hx-samples` 微調。網站加 `?live=1`（調度台、市民地圖）每秒更新。相機模式的 `gate.py` 會限制 onnxruntime 用 `GATE_ORT_THREADS`（預設 2）個核心、並以 `GATE_NICE`（預設 10）降低優先權，避免搶走感測程式量測時序。
+**接近即時（#43）**：`--fast --interval 1` 每輪只取超音波 5 筆、HX711 4 筆（約 0.6 秒），LCD 和上傳約每秒一次；可以用 `--sonar-samples`、`--hx-samples` 微調。網站（調度台、市民地圖）預設每秒更新（#49），`?period=秒數` 可自訂，分頁在背景時暫停。相機模式的 `gate.py` 會限制 onnxruntime 用 `GATE_ORT_THREADS`（預設 2）個核心、並以 `GATE_NICE`（預設 10）降低優先權，避免搶走感測程式量測時序。
 
 LCD 第二行會顯示擋板狀態（#36）：`gate.py` 開閘、拒收時寫入 `GATE_STATUS_FILE`（預設 `/tmp/smartbin-gate.json`），`node_pi.py` 每 0.5 秒讀一次，在重量後面顯示 `OPEN`（最多 15 秒）或 `REJECT`（5 秒），比 `BLOCKED` 優先。兩支程式的 `GATE_STATUS_FILE` 要設成同一個檔案；設成空字串就停用。
 
