@@ -312,3 +312,34 @@ def test_node_redraws_lcd_only_when_gate_state_changes(tmp_path):
     node.refresh_lcd()
     node.refresh_lcd()
     assert shown == ["no scale", "no scale OPEN"]
+
+
+def test_node_remote_commands():
+    shown, reports = [], []
+    lcd = type("L", (), {"show": lambda self, a, b: shown.append((a, b))})()
+    sonar = type("S", (), {"read_cm": lambda self: 20.0})()
+    scale = type("H", (), {"read_median": lambda self, n=15: 5000.0})()
+    posted = []
+    cmds = [{"id": 1, "cmd": "lcd_text", "args": {"text": "Hello Professor!Welcome"}},
+            {"id": 2, "cmd": "measure_now", "args": {}},
+            {"id": 3, "cmd": "tare", "args": {}},
+            {"id": 4, "cmd": "gate_open", "args": {}}]
+    client = type("C", (), {"fetch": lambda self: cmds, "report": lambda self, *a: reports.append(a)})()
+    node = node_pi.Node("NTNU-01", 30, sonar, scale, hx_scale=2.0, hx_offset=1000.0, lcd=lcd,
+                        poster=lambda p: posted.append(p) or True, commands=client)
+    node.run_commands()
+    assert ("Hello Professor!", "Welcome") in shown
+    assert [r[1] for r in reports] == [True, True, True, False]
+    assert posted and posted[0]["weight_g"] == 2000.0       # (5000-1000)/2
+    assert node.hx_offset == 5000.0 and node.read_weight() == 0.0
+    # 自訂文字顯示期間不被量測結果蓋掉，過期後恢復
+    now = node_pi.time.time()
+    node.refresh_lcd(now + 1)
+    assert node._lcd_lines == ("Hello Professor!", "Welcome")
+    node.refresh_lcd(now + node_pi.LCD_TEXT_S + 1)
+    assert node._lcd_lines[0].startswith("NTNU-01")
+
+
+def test_split_lcd_text():
+    assert node_pi.split_lcd_text("a\nb") == ("a", "b")
+    assert node_pi.split_lcd_text("x" * 40) == ("x" * 16, "x" * 16)

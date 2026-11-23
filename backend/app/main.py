@@ -90,6 +90,23 @@ class EventIn(BaseModel):
     detail: dict | None = None
 
 
+# 遠端控制（#41）：指令 → 由哪支程式執行
+COMMANDS = {"gate_open": "gate", "gate_close": "gate", "gate_reject": "gate", "gate_mode": "gate",
+            "lcd_text": "node", "measure_now": "node", "tare": "node"}
+GATE_MODES = {"mock", "camera"}
+COMMAND_TTL_S = 60  # 超過這麼久沒被裝置取走就不送（避免裝置離線很久後才突然動作）
+
+
+class CommandIn(BaseModel):
+    cmd: str
+    args: dict = Field(default_factory=dict)
+
+
+class CommandResultIn(BaseModel):
+    ok: bool
+    result: dict | str | None = None
+
+
 class PlanIn(BaseModel):
     vehicles: int = Field(1, ge=1, le=10)
     vehicle_capacity_l: int = Field(2000, ge=100)
@@ -220,7 +237,74 @@ def post_event(e: EventIn, x_device_token: str = Header("")):
     return ingest_event(e)
 
 
+@app.get("/api/device/commands")
+def device_commands(bin_id: str, target: str = Query(pattern="^(gate|node)$"), x_device_token: str = Header("")):
+    """裝置輪詢：取走自己桶子、自己負責的待執行指令（取走即標為 sent）。"""
+    device_auth(bin_id, x_device_token)
+    now = time.time()
+    with db.conn() as c:
+        c.execute("UPDATE commands SET status='expired', updated_at=? WHERE status='pending' AND created_at<?",
+                  (now, now - COMMAND_TTL_S))
+        rows = c.execute("SELECT id, cmd, args FROM commands WHERE bin_id=? AND target=? AND status='pending' "
+                         "ORDER BY id", (bin_id, target)).fetchall()
+        if rows:
+            c.execute(f"UPDATE commands SET status='sent', updated_at=? WHERE id IN ({','.join('?' * len(rows))})",
+                      (now, *[r["id"] for r in rows]))
+    return [{"id": r["id"], "cmd": r["cmd"], "args": json.loads(r["args"] or "{}")} for r in rows]
+
+
+@app.post("/api/device/commands/{cid}/result", status_code=204)
+def device_command_result(cid: int, body: CommandResultIn, bin_id: str, x_device_token: str = Header("")):
+    device_auth(bin_id, x_device_token)
+    with db.conn() as c:
+        n = c.execute("UPDATE commands SET status=?, result=?, updated_at=? WHERE id=? AND bin_id=?",
+                      ("done" if body.ok else "failed", json.dumps(body.result, ensure_ascii=False),
+                       time.time(), cid, bin_id)).rowcount
+    if not n:
+        raise HTTPException(404, "unknown command")
+
+
 # ---------------------------------------------------------------- routes: admin
+@app.post("/api/bins/{bin_id}/commands", dependencies=[Depends(require_admin)])
+def create_command(bin_id: str, body: CommandIn):
+    target = COMMANDS.get(body.cmd)
+    if not target:
+        raise HTTPException(422, f"cmd must be one of {sorted(COMMANDS)}")
+    args = {}
+    if body.cmd == "gate_mode":
+        if body.args.get("mode") not in GATE_MODES:
+            raise HTTPException(422, f"mode must be one of {sorted(GATE_MODES)}")
+        args = {"mode": body.args["mode"]}
+    elif body.cmd == "lcd_text":
+        text = str(body.args.get("text", "")).strip()
+        if not text or len(text) > 32:
+            raise HTTPException(422, "text must be 1–32 characters")
+        if not all(" " <= ch <= "~" for ch in text):  # LCD1602 字庫只有英數字，中文會變亂碼
+            raise HTTPException(422, "LCD 只能顯示英文、數字和半形符號")
+        args = {"text": text}
+    now = time.time()
+    with db.conn() as c:
+        if not c.execute("SELECT 1 FROM bins WHERE id=?", (bin_id,)).fetchone():
+            raise HTTPException(404, "unknown bin")
+        cid = c.execute("INSERT INTO commands(bin_id,target,cmd,args,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                        (bin_id, target, body.cmd, json.dumps(args, ensure_ascii=False), now, now)).lastrowid
+    return {"id": cid, "bin_id": bin_id, "target": target, "cmd": body.cmd, "args": args, "status": "pending"}
+
+
+@app.get("/api/bins/{bin_id}/commands", dependencies=[Depends(require_admin)])
+def list_commands(bin_id: str, limit: int = Query(10, ge=1, le=100)):
+    now = time.time()
+    with db.conn() as c:
+        rows = c.execute("SELECT * FROM commands WHERE bin_id=? ORDER BY id DESC LIMIT ?", (bin_id, limit)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r, args=json.loads(r["args"] or "{}"), result=json.loads(r["result"]) if r["result"] else None)
+        if d["status"] == "pending" and r["created_at"] < now - COMMAND_TTL_S:
+            d["status"] = "expired"
+        out.append(d)
+    return out
+
+
 @app.post("/api/bins", dependencies=[Depends(require_admin)])
 def create_bin(b: BinIn):
     token = secrets.token_urlsafe(24)

@@ -106,6 +106,8 @@ def build_payload(bin_id: str, fill_pct: float | None, dist_cm: float | None,
 GATE_STATUS_FILE = os.environ.get("GATE_STATUS_FILE", "/tmp/smartbin-gate.json")
 GATE_LABELS = {"open": ("OPEN", 15.0), "reject": ("REJECT", 5.0)}  # 狀態 → (LCD 字樣, 顯示幾秒)
 LCD_POLL_S = 0.5           # 兩輪量測之間多久檢查一次閘門狀態
+COMMAND_PERIOD_S = 2.0     # 多久向後端拿一次調度台的遠端指令（#41）
+LCD_TEXT_S = 10.0          # 遠端 LCD 文字顯示幾秒
 
 
 def read_gate_status(path: str, now: float | None = None) -> str | None:
@@ -380,11 +382,45 @@ def post_telemetry(api: str, token: str, payload: dict) -> bool:
         return False
 
 
+class CommandClient:
+    """向後端拿調度台送給 node 的指令，執行後回報（#41）。網路錯誤只記 debug，不影響量測。"""
+
+    def __init__(self, api: str, token: str, bin_id: str):
+        self.api, self.token, self.bin_id = api.rstrip("/"), token, bin_id
+
+    def fetch(self) -> list[dict]:
+        import httpx
+        try:
+            r = httpx.get(f"{self.api}/api/device/commands", timeout=5,
+                          params={"bin_id": self.bin_id, "target": "node"},
+                          headers={"X-Device-Token": self.token})
+            return r.json() if r.status_code == 200 else []
+        except (httpx.HTTPError, ValueError) as e:
+            log.debug("拿不到遠端指令：%s", e)
+            return []
+
+    def report(self, cid: int, ok: bool, result) -> None:
+        import httpx
+        try:
+            httpx.post(f"{self.api}/api/device/commands/{cid}/result", timeout=5,
+                       params={"bin_id": self.bin_id}, json={"ok": ok, "result": result},
+                       headers={"X-Device-Token": self.token})
+        except httpx.HTTPError as e:
+            log.warning("遠端指令結果回報失敗：%s", e)
+
+
+def split_lcd_text(text: str) -> tuple[str, str]:
+    """自訂文字拆成兩行；有換行就照換行，否則每行 16 字。"""
+    parts = text.split("\n", 1) if "\n" in text else [text[:LCD_COLS], text[LCD_COLS:]]
+    return parts[0][:LCD_COLS], (parts[1] if len(parts) > 1 else "")[:LCD_COLS]
+
+
 # ----------------------------------------------------------------------------- 節點主迴圈
 class Node:
     def __init__(self, bin_id: str, depth_cm: float, sonar, scale=None,
                  hx_scale: float | None = None, hx_offset: float | None = None,
-                 lcd: Lcd | None = None, poster=None, gate_status_file: str = ""):
+                 lcd: Lcd | None = None, poster=None, gate_status_file: str = "",
+                 commands: CommandClient | None = None):
         self.bin_id = bin_id
         self.depth_cm = depth_cm
         self.sonar = sonar
@@ -398,14 +434,22 @@ class Node:
         self.gate_status_file = gate_status_file
         self._reading: tuple | None = None   # 最近一輪 (fill, weight, blocked)，閘門狀態變了就重畫
         self._lcd_lines: tuple[str, str] | None = None
+        self.commands = commands
+        self.lcd_text: tuple[str, str] | None = None   # 遠端自訂文字
+        self.lcd_text_until = 0.0
 
     def refresh_lcd(self, now: float | None = None) -> None:
         """依最近一輪讀值 + 閘門狀態更新 LCD；內容沒變就不寫 I²C。"""
         if self.lcd is None or self._reading is None:
             return
+        now = now or time.time()
         fill, weight, blocked = self._reading
-        lines = lcd_lines(self.bin_id, fill, weight, blocked, self.scale is not None,
-                          read_gate_status(self.gate_status_file, now))
+        if self.lcd_text and now < self.lcd_text_until:
+            lines = self.lcd_text
+        else:
+            self.lcd_text = None
+            lines = lcd_lines(self.bin_id, fill, weight, blocked, self.scale is not None,
+                              read_gate_status(self.gate_status_file, now))
         if lines != self._lcd_lines:
             self.lcd.show(*lines)
             self._lcd_lines = lines
@@ -457,6 +501,44 @@ class Node:
             log.info("已上傳 %s", payload)
         return payload
 
+    def handle_command(self, cmd: str, args: dict, now: float | None = None) -> tuple[bool, str]:
+        now = now or time.time()
+        if cmd == "lcd_text":
+            text = str(args.get("text", ""))
+            if not text:
+                return False, "沒有文字"
+            self.lcd_text, self.lcd_text_until = split_lcd_text(text), now + LCD_TEXT_S
+            self.refresh_lcd(now)
+            return True, f"LCD 顯示 {LCD_TEXT_S:g} 秒"
+        if cmd == "measure_now":
+            p = self.step()
+            if p is None:
+                return False, "量不到距離，這次沒有上傳"
+            w = p.get("weight_g")
+            return True, f"已量測並上傳：滿度 {p['fill_pct']:.0f}%" + ("" if w is None else f"、重量 {w:.0f} g")
+        if cmd == "tare":
+            if self.scale is None or self.hx_scale is None:
+                return False, "沒有接秤或還沒校正"
+            raw = self.scale.read_median()
+            if raw is None:
+                return False, "HX711 沒有回應"
+            self.hx_offset = raw
+            log.info("遠端歸零：HX711_OFFSET=%.0f（重開程式後要更新 node.env 才會保留）", raw)
+            return True, f"已歸零，新的 HX711_OFFSET={raw:.0f}（要長期保留請更新 node.env）"
+        return False, f"感測節點不支援指令 {cmd}"
+
+    def run_commands(self) -> None:
+        if self.commands is None:
+            return
+        for c in self.commands.fetch():
+            try:
+                ok, result = self.handle_command(c["cmd"], c.get("args") or {})
+            except Exception as e:  # 指令失敗不能讓節點停掉
+                log.exception("遠端指令 %s 失敗", c.get("cmd"))
+                ok, result = False, f"執行錯誤：{e}"
+            log.info("REMOTE %s → %s", c["cmd"], result)
+            self.commands.report(c["id"], ok, result)
+
     def run(self, interval: float, once: bool = False) -> None:
         while True:
             t0 = time.monotonic()
@@ -467,8 +549,12 @@ class Node:
             if once:
                 return
             end = max(t0 + interval, time.monotonic() + 1.0)  # 至少等 1 秒
+            next_cmd = 0.0
             while (left := end - time.monotonic()) > 0:
                 time.sleep(min(LCD_POLL_S, left))
+                if time.monotonic() >= next_cmd:
+                    next_cmd = time.monotonic() + COMMAND_PERIOD_S
+                    self.run_commands()
                 try:
                     self.refresh_lcd()
                 except Exception:
@@ -589,7 +675,8 @@ def main(argv=None) -> int:
 
     node = Node(a.bin, a.depth_cm, sonar, scale, hx_scale, hx_offset, lcd,
                 poster=lambda p: post_telemetry(a.api, a.token, p),
-                gate_status_file="" if a.dry else GATE_STATUS_FILE)
+                gate_status_file="" if a.dry else GATE_STATUS_FILE,
+                commands=CommandClient(a.api, a.token, a.bin) if a.token else None)
     log.info("開始：bin=%s api=%s 桶深=%.1f cm 間隔=%.0f s 秤重=%s%s", a.bin, a.api, a.depth_cm,
              a.interval, "開" if scale else "關", "（dry）" if a.dry else "")
     try:
