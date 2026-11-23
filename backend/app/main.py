@@ -91,9 +91,10 @@ class EventIn(BaseModel):
 
 
 # 遠端控制（#41）：指令 → 由哪支程式執行
-COMMANDS = {"gate_open": "gate", "gate_close": "gate", "gate_reject": "gate", "gate_mode": "gate",
+COMMANDS = {"gate_open": "gate", "gate_close": "gate", "gate_reject": "gate", "gate_mode": "gate", "gate_policy": "gate",
             "lcd_text": "node", "measure_now": "node", "tare": "node"}
 GATE_MODES = {"mock", "camera"}
+GATE_POLICIES = {"auto", "force_open", "force_lock"}
 COMMAND_TTL_S = 60  # 超過這麼久沒被裝置取走就不送（避免裝置離線很久後才突然動作）
 
 
@@ -310,6 +311,10 @@ def create_command(bin_id: str, body: CommandIn):
         if body.args.get("mode") not in GATE_MODES:
             raise HTTPException(422, f"mode must be one of {sorted(GATE_MODES)}")
         args = {"mode": body.args["mode"]}
+    elif body.cmd == "gate_policy":
+        if body.args.get("policy") not in GATE_POLICIES:
+            raise HTTPException(422, f"policy must be one of {sorted(GATE_POLICIES)}")
+        args = {"policy": body.args["policy"]}
     elif body.cmd == "lcd_text":
         text = str(body.args.get("text", "")).strip()
         if not text or len(text) > 32:

@@ -112,6 +112,12 @@
   .ctl button{padding:6px 10px;font-size:13px}
   .ctl button.warn{background:var(--r)}
   .ctl button.alt{background:var(--b)}
+  .ctl .seg button{padding:5px 10px}
+  .ctl .seg button.on{background:var(--fg);color:#fff;box-shadow:none}
+  .why{margin-top:10px;padding:8px 10px;border-radius:10px;background:var(--soft);font-size:13px;display:flex;gap:8px;align-items:center}
+  .why b{font-weight:600}
+  .why.lock{background:#fdecea;color:#991b1b}
+  .why.open{background:#e8f5ee;color:#14532d}
   .ctl input{font:inherit;flex:1;min-width:120px;padding:6px 8px;border:1px solid var(--line);border-radius:8px}
   .cmds{display:grid;gap:4px;font-size:12px;max-height:150px;overflow:auto}
   .cmds div{display:flex;gap:6px;align-items:baseline}
@@ -172,6 +178,7 @@
         <div id="hist-wrap"><canvas id="hist"></canvas></div>
         <div class="dev">
           <h2 style="font-size:13px">元件狀態 <small id="dev-age"></small></h2>
+          <div class="why" id="why" hidden></div>
           <div class="tiles" id="tiles"></div>
           <div class="vision">
             <div><svg id="vis" viewBox="0 0 400 300" role="img" aria-label="相機辨識示意圖（非影像）"></svg>
@@ -184,6 +191,8 @@
           <div class="row"><span>擋板</span>
             <button data-cmd="gate_open">開門</button><button data-cmd="gate_close" class="ghost">關門</button>
             <button data-cmd="gate_reject" class="warn">測試拒收</button></div>
+          <div class="row"><span>閘門策略</span>
+            <div class="seg" id="policy"><button data-cmd="gate_policy" data-policy="auto">自動</button><button data-cmd="gate_policy" data-policy="force_open">強制開啟</button><button data-cmd="gate_policy" data-policy="force_lock">強制鎖定</button></div></div>
           <div class="row"><span>閘門模式</span>
             <button data-cmd="gate_mode" data-mode="mock" class="ghost">劇本</button>
             <button data-cmd="gate_mode" data-mode="camera" class="alt">相機即時辨識</button></div>
@@ -434,10 +443,19 @@ function renderStatus(st){
       :cam.state==='ok'?tile(cam.fps>=3?'ok':'warn','相機',`${cam.fps} FPS`,`有效影格 ${cam.valid}/${cam.attempts}・辨識 ${cam.detect_ms} ms`)
       :cam.state==='no_frames'?tile('bad','相機','讀不到畫面','檢查 USB 連接與 /dev/video0')
       :tile('warn','相機','啟動中','約 20 張畫面後顯示 FPS'));
-    t.push(tile(gt.bin_full_lock?'bad':'ok','擋板',gt.open?'開啟':'關閉',
-      [gt.bin_full_lock?'桶滿，已鎖定不收':'',gt.last_reject_ts?`最後拒收 ${agoS(gt.last_reject_ts)}`:''].filter(Boolean).join('・')));
+    const POL={auto:'自動',force_open:'強制開啟',force_lock:'強制鎖定'};
+    t.push(tile(gt.lock?'bad':gt.policy==='force_open'?'warn':'ok','擋板',`${gt.open?'開啟':'關閉'}・${POL[gt.policy]||'自動'}`,
+      [gt.lock?`🔒 ${esc(gt.lock)}`:'',gt.bin_blocked&&!gt.lock_when_blocked?'感測被擋（未設定鎖定）':'',
+       gt.last_reject_ts?`最後拒收 ${agoS(gt.last_reject_ts)}`:''].filter(Boolean).join('・')));
   }
   document.getElementById('tiles').innerHTML=t.join('');
+  // 閘門目前判斷原因（#55）
+  const why=document.getElementById('why');
+  if(g&&g.gate){const gt=g.gate;
+    why.hidden=false; why.className='why'+(gt.lock?' lock':gt.open?' open':'');
+    why.innerHTML=`<span>${gt.lock?'🔒':gt.open?'🟢':'⏸'}</span><span>閘門：<b>${esc(gt.reason||'-')}</b></span>`;
+    document.querySelectorAll('#policy button').forEach(b=>b.classList.toggle('on',b.dataset.policy===(gt.policy||'auto')));
+  }else{why.hidden=true}
   renderVision(g);
 }
 function renderVision(g){
@@ -465,7 +483,7 @@ async function loadStatus(signal){
 }
 
 // ---- 遠端控制（#41）
-const CMD={gate_open:'開門',gate_close:'關門',gate_reject:'測試拒收',gate_mode:'切換模式',lcd_text:'LCD 文字',measure_now:'立即量測',tare:'秤重歸零'};
+const CMD={gate_policy:'閘門策略',gate_open:'開門',gate_close:'關門',gate_reject:'測試拒收',gate_mode:'切換模式',lcd_text:'LCD 文字',measure_now:'立即量測',tare:'秤重歸零'};
 const CST={pending:['等待 Pi','#c98a00'],sent:['執行中','#2563eb'],done:['完成','#1f6f4a'],failed:['失敗','#c0392b'],expired:['逾時（Pi 沒回應）','#6b7280']};
 async function loadCommands(signal){
   if(!histBin) return;
@@ -473,7 +491,7 @@ async function loadCommands(signal){
   if(!r.ok||signal?.aborted) return;
   const cs=await r.json();
   document.getElementById('cmds').innerHTML=cs.map(c=>{const [t,col]=CST[c.status]||[c.status,'#999'];
-    const arg=c.cmd==='gate_mode'?(c.args.mode==='camera'?'→相機':'→劇本'):c.cmd==='lcd_text'?`「${esc(c.args.text)}」`:'';
+    const arg=c.cmd==='gate_policy'?`→${{auto:'自動',force_open:'強制開啟',force_lock:'強制鎖定'}[c.args.policy]||''}`:c.cmd==='gate_mode'?(c.args.mode==='camera'?'→相機':'→劇本'):c.cmd==='lcd_text'?`「${esc(c.args.text)}」`:'';
     return `<div><span class="t">${new Date(c.created_at*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}</span>
       <b>${CMD[c.cmd]||esc(c.cmd)}${arg}</b><span class="st" style="color:${col}">${t}</span><span class="rs">${esc(c.result??'')}</span></div>`}).join('');
 }
@@ -482,6 +500,7 @@ document.getElementById('ctl').onclick=async e=>{
   const btn=e.target.closest('button[data-cmd]'); if(!btn||!histBin) return;
   const cmd=btn.dataset.cmd, args={};
   if(cmd==='gate_mode') args.mode=btn.dataset.mode;
+  if(cmd==='gate_policy') args.policy=btn.dataset.policy;
   if(cmd==='lcd_text'){args.text=document.getElementById('lcd-text').value.trim(); if(!args.text){alert('請輸入文字');return}}
   if(cmd==='tare'&&!confirm('確定把目前的重量設為 0？秤上請只放空桶。')) return;
   btn.disabled=true;

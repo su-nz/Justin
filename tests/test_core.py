@@ -621,3 +621,84 @@ def test_gate_snapshot_has_detections_but_no_image():
     assert snap["gate"]["last_reject_ts"] is not None
     import json
     assert len(json.dumps(snap)) < 4000
+
+
+def _policy_gate(tmp_path):
+    cfg = gate.Cfg()
+    cfg.policy_file = str(tmp_path / "policy")
+    act = gate.Actuators(cfg, dry=True)
+    return cfg, act, gate.Gate(cfg, act, gate.Uploader(cfg, offline=True))
+
+
+CUP_IN_SLOT = [("cup", 0.9, (0.45, 0.1, 0.52, 0.22))]
+
+
+def test_blocked_sensor_locks_gate_and_explains(tmp_path):
+    cfg, act, g = _policy_gate(tmp_path)
+    g.bin_blocked = True
+    g.step(CUP_IN_SLOT, 0); g.step(CUP_IN_SLOT, 0.5)
+    assert not act.is_open and act.last_reject_ts is not None
+    assert g.reason == "感測被擋鎖定：看到杯子也不收"
+    g.bin_blocked = False
+    g.step(CUP_IN_SLOT, 1); g.step(CUP_IN_SLOT, 1.5)
+    assert act.is_open and g.reason == "開門：看到杯子"
+
+
+def test_blocked_lock_can_be_disabled(tmp_path):
+    cfg, act, g = _policy_gate(tmp_path)
+    cfg.lock_when_blocked = False
+    g.bin_blocked = True
+    g.step(CUP_IN_SLOT, 0); g.step(CUP_IN_SLOT, 0.5)
+    assert act.is_open
+
+
+def test_gate_policy_force_open_lock_auto_and_persist(tmp_path):
+    cfg, act, g = _policy_gate(tmp_path)
+    ok, _ = g.handle_command("gate_policy", {"policy": "force_open"}, 0)
+    assert ok and act.is_open
+    g.step([], 100)                                   # 沒看到東西也一直開著
+    assert act.is_open and g.reason == "強制開啟"
+    g.handle_command("gate_policy", {"policy": "force_lock"}, 101)
+    assert not act.is_open
+    g.step(CUP_IN_SLOT, 102); g.step(CUP_IN_SLOT, 102.5)
+    assert not act.is_open and g.reason.startswith("強制鎖定")
+    assert (tmp_path / "policy").read_text() == "force_lock"
+    _, _, g2 = _policy_gate(tmp_path)                 # 換模式重開後策略保留
+    assert g2.policy == "force_lock" and g2.reason == "強制鎖定"
+    (tmp_path / "policy").write_text("force_open")
+    _, act3, g3 = _policy_gate(tmp_path)
+    assert act3.is_open and g3.reason == "強制開啟"   # 一啟動就開著，不用等第一幀
+    (tmp_path / "policy").write_text("force_lock")
+    g.handle_command("gate_policy", {"policy": "auto"}, 103)
+    g.step([], 103.5)
+    assert not act.is_open and g.reason == "等待投入"
+    assert g.handle_command("gate_policy", {"policy": "x"}, 104)[0] is False
+    assert g.snapshot()["gate"]["policy"] == "auto"
+
+
+def test_gate_reason_out_of_slot_and_not_disposable(tmp_path):
+    cfg, act, g = _policy_gate(tmp_path)
+    g.step([("cup", 0.9, (0.0, 0.6, 0.1, 0.7))], 0)
+    assert g.reason == "看到杯子，但不在投入口"
+    g.step([("other", 0.9, (0.45, 0.1, 0.5, 0.15))], 1)
+    assert g.reason == "投入口有其他物品，不是可投物品"
+
+
+def test_backend_accepts_gate_policy_command(tmp_path, monkeypatch):
+    cl, adm = _cmd_client(tmp_path, monkeypatch)
+    with cl:
+        cl.post("/api/bins", headers=adm, json={"id": "A", "name": "A", "lat": 25.0, "lng": 121.5})
+        assert cl.post("/api/bins/A/commands", headers=adm, json={"cmd": "gate_policy", "args": {"policy": "force_lock"}}).json()["target"] == "gate"
+        assert cl.post("/api/bins/A/commands", headers=adm, json={"cmd": "gate_policy", "args": {"policy": "nope"}}).status_code == 422
+
+
+def test_gate_drains_pending_commands_on_exit(tmp_path):
+    cfg, act, g = _policy_gate(tmp_path)
+    reports = []
+    g.reporter = SimpleNamespace(report=lambda *a: reports.append(a))
+    g.commands.put({"id": 1, "cmd": "gate_policy", "args": {"policy": "force_lock"}})
+    g.commands.put({"id": 2, "cmd": "gate_open", "args": {}})
+    g.stopping = True
+    g.drain_commands(0)
+    assert (tmp_path / "policy").read_text() == "force_lock"
+    assert reports[0][1] is True and reports[1][1] is False and "再按一次" in reports[1][2]
