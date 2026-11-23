@@ -272,3 +272,43 @@ def test_cli_env_and_calibration(monkeypatch, capsys):
     assert node_pi.main(["--dry", "--calibrate", "600"]) == 1   # 沒有 offset 要先 tare
     assert node_pi.main(["--dry", "--tare"]) == 0
     assert "export HX711_OFFSET=" in capsys.readouterr().out
+
+
+def test_lcd_shows_gate_state_before_blocked():
+    assert node_pi.lcd_lines("NTNU-01", 62, 1250, False, gate="OPEN")[1] == "1.25 kg OPEN"
+    assert node_pi.lcd_lines("NTNU-01", 62, 1250, True, gate="REJECT")[1] == "1.25 kg REJECT"
+    assert node_pi.lcd_lines("NTNU-01", 62, 1250, True, gate=None)[1] == "1.25 kg BLOCKED"
+    assert len(node_pi.lcd_lines("NTNU-01", 62, 99999, True, gate="REJECT")[1]) <= 16
+
+
+def test_read_gate_status_expires_and_ignores_close(tmp_path):
+    import json
+    f = tmp_path / "g.json"
+    assert node_pi.read_gate_status(str(f), now=100) is None            # 沒有檔案
+    f.write_text(json.dumps({"state": "open", "ts": 100}))
+    assert node_pi.read_gate_status(str(f), now=110) == "OPEN"
+    assert node_pi.read_gate_status(str(f), now=200) is None            # 過期
+    f.write_text(json.dumps({"state": "reject", "ts": 100}))
+    assert node_pi.read_gate_status(str(f), now=103) == "REJECT"
+    assert node_pi.read_gate_status(str(f), now=106) is None
+    f.write_text(json.dumps({"state": "close", "ts": 100}))
+    assert node_pi.read_gate_status(str(f), now=101) is None
+    f.write_text("{壞掉")
+    assert node_pi.read_gate_status(str(f), now=101) is None
+    assert node_pi.read_gate_status("", now=101) is None
+
+
+def test_node_redraws_lcd_only_when_gate_state_changes(tmp_path):
+    import json
+    shown = []
+    lcd = type("L", (), {"show": lambda self, a, b: shown.append(b)})()
+    sonar = type("S", (), {"read_cm": lambda self: 20.0})()
+    f = tmp_path / "g.json"
+    node = node_pi.Node("NTNU-01", 30, sonar, lcd=lcd, gate_status_file=str(f))
+    node.step()
+    node.refresh_lcd()                       # 沒變化 → 不重寫 I²C
+    assert shown == ["no scale"]
+    f.write_text(json.dumps({"state": "open", "ts": node_pi.time.time()}))
+    node.refresh_lcd()
+    node.refresh_lcd()
+    assert shown == ["no scale", "no scale OPEN"]

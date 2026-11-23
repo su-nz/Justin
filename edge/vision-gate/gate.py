@@ -61,6 +61,8 @@ class Cfg:
     buzzer_pin: int = 25
     state_period_s: float = 60.0    # 多久向後端查一次桶子狀態
     spool: str = os.environ.get("GATE_SPOOL", "/var/lib/smartbin/spool.jsonl")
+    # 擋板最新動作，給 node_pi.py 顯示在 LCD（#36）；空字串 = 不寫
+    status_file: str = os.environ.get("GATE_STATUS_FILE", "/tmp/smartbin-gate.json")
 
 
 # ----------------------------------------------------------------------------- geometry
@@ -219,6 +221,18 @@ class OnnxDetector:
 
 
 # ----------------------------------------------------------------------------- actuators
+def write_gate_status(path: str, state: str, now: float | None = None) -> None:
+    """原子寫入 {"state": open|close|reject, "ts": ...}；寫不進去只記 log，不影響閘門。"""
+    if not path:
+        return
+    tmp = f"{path}.tmp"
+    try:
+        Path(tmp).write_text(json.dumps({"state": state, "ts": now or time.time()}))
+        os.replace(tmp, path)
+    except OSError as e:
+        log.debug("寫入閘門狀態檔失敗：%s", e)
+
+
 def servo_pin_factory():
     """伺服用 pigpio 的硬體計時 PWM，比 gpiozero 預設的軟體 PWM 穩，不會抖。
 
@@ -256,6 +270,7 @@ class Actuators:
             self.servo.angle = self.cfg.servo_open_angle
             self.g.on()
             self.r.off()
+            write_gate_status(self.cfg.status_file, "open")
 
     def close(self):
         self.is_open = False
@@ -263,12 +278,14 @@ class Actuators:
         if not self.dry:
             self.servo.angle = self.cfg.servo_close_angle
             self.g.off()
+            write_gate_status(self.cfg.status_file, "close")
 
     def reject(self):
         log.info("REJECT (red)")
         if not self.dry:
             self.r.blink(on_time=0.2, off_time=0.2, n=8, background=True)
             self.buzzer.beep(on_time=0.2, off_time=0.2, n=3, background=True)
+            write_gate_status(self.cfg.status_file, "reject")
 
     def shutdown(self):
         self.close()

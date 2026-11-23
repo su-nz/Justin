@@ -396,3 +396,12 @@ def test_shutdown_holds_close_signal_before_detach(monkeypatch):
     act.shutdown()   # 擋板開著時結束
     assert servo.events == [("sleep", cfg.servo_settle_s), ("detach", cfg.servo_close_angle)]
     assert cfg.servo_settle_s >= 0.3
+
+
+def test_gate_writes_status_file_for_lcd(tmp_path):
+    import json
+    f = tmp_path / "gate.json"
+    gate.write_gate_status(str(f), "reject", now=123.0)
+    assert json.loads(f.read_text()) == {"state": "reject", "ts": 123.0}
+    gate.write_gate_status(str(tmp_path / "no" / "dir.json"), "open")   # 寫不進去不丟例外
+    gate.write_gate_status("", "open")

@@ -107,6 +107,8 @@ python3 edge/pi-demo/node_pi.py --depth-cm 30
 ```
 筆電測試用 `--dry`（假距離、假重量，不碰 GPIO）；沒接秤用 `--no-scale`。HX711 讀不到時該輪不送 `weight_g`，其他照常上傳。
 
+LCD 第二行會顯示擋板狀態（#36）：`gate.py` 開閘、拒收時寫入 `GATE_STATUS_FILE`（預設 `/tmp/smartbin-gate.json`），`node_pi.py` 每 0.5 秒讀一次，在重量後面顯示 `OPEN`（最多 15 秒）或 `REJECT`（5 秒），比 `BLOCKED` 優先。兩支程式的 `GATE_STATUS_FILE` 要設成同一個檔案；設成空字串就停用。
+
 ## 視覺閘門（edge/vision-gate）
 
 攝影機架在桶上方往下看，一個畫面切兩個 ROI：投入口（拒收大袋 / 小垃圾才開閘、有手不關閘）與地面（覆蓋率連續兩次 ≥5% → `ground_waste`）。只上傳事件，不上傳影像。
