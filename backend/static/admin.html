@@ -217,8 +217,8 @@ const H={'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 // ?demo=1：現場 Demo 用，每 5 秒更新並把地圖移到 NTNU-01（?bin= 可換桶）；平常 30 秒
 const Q=new URLSearchParams(location.search), DEMO=Q.get('demo')==='1'||Q.get('live')==='1', FOCUS=Q.get('bin')||'NTNU-01';
-const LIVE=Q.get('live')==='1';
-const PERIOD=LIVE?1000:DEMO?5000:30000;  // ?live=1：每秒更新（#43）
+// 預設每秒更新（#49）；?period=秒數 可以自訂
+const PERIOD=Math.max(1,+Q.get('period')||1)*1000;
 let focused=false;
 const ago=t=>{if(t==null)return'-';const s=Math.max(0,Date.now()/1000-t);
   return s<60?`${Math.round(s)} 秒前`:s<3600?`${Math.floor(s/60)} 分前`:new Date(t*1000).toLocaleString()};
@@ -391,7 +391,7 @@ document.getElementById('ctl').onclick=async e=>{
 };
 
 function setLive(){
-  const el=document.getElementById('live'), stale=Date.now()-lastOk>PERIOD*3;
+  const el=document.getElementById('live'), stale=Date.now()-lastOk>Math.max(PERIOD*3,10000);
   el.classList.toggle('stale',stale);
   const left=Math.max(0,Math.ceil((nextAt-Date.now())/1000));
   const when=lastOk?new Date(lastOk).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}):'';
@@ -455,7 +455,9 @@ document.getElementById('plan').onclick=async()=>{
   }finally{btn.disabled=false; btn.textContent='產生路線'}
 };
 // 每 250 ms 檢查：時間到就更新，並刷新倒數文字
-refresh();setInterval(()=>{if(!poll&&Date.now()>=nextAt) refresh(); setLive()},250);
+// 分頁在背景時不更新（省流量、減輕 Pi 負擔），回到前景立刻更新
+document.addEventListener('visibilitychange',()=>{if(!document.hidden) refresh()});
+refresh();setInterval(()=>{if(!document.hidden&&!poll&&Date.now()>=nextAt) refresh(); setLive()},250);
 </script>
 </body>
 </html>
