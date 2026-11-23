@@ -107,6 +107,8 @@ python3 edge/pi-demo/node_pi.py --depth-cm 30
 ```
 筆電測試用 `--dry`（假距離、假重量，不碰 GPIO）；沒接秤用 `--no-scale`。HX711 讀不到時該輪不送 `weight_g`，其他照常上傳。
 
+LCD 第二行會顯示擋板狀態（#36）：`gate.py` 開閘、拒收時寫入 `GATE_STATUS_FILE`（預設 `/tmp/smartbin-gate.json`），`node_pi.py` 每 0.5 秒讀一次，在重量後面顯示 `OPEN`（最多 15 秒）或 `REJECT`（5 秒），比 `BLOCKED` 優先。兩支程式的 `GATE_STATUS_FILE` 要設成同一個檔案；設成空字串就停用。
+
 **開機自動啟動**：用 `edge/pi-demo/smartbin-node.service`。設定寫在 `/etc/smartbin/node.env`，token 不進 repo。LCD 位址是 0x3f 時設 `LCD_ADDR=0x3f`。
 ```bash
 sudo useradd -r -s /usr/sbin/nologin -G gpio,i2c smartbin

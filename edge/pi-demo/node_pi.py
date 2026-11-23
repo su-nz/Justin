@@ -19,6 +19,7 @@ GPIO18、23、24、25 是 gate.py 的，這支程式不碰。
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import math
 import os
@@ -26,6 +27,7 @@ import random
 import statistics
 import sys
 import time
+from pathlib import Path
 
 log = logging.getLogger("node_pi")
 
@@ -101,9 +103,27 @@ def build_payload(bin_id: str, fill_pct: float | None, dist_cm: float | None,
     return p
 
 
+GATE_STATUS_FILE = os.environ.get("GATE_STATUS_FILE", "/tmp/smartbin-gate.json")
+GATE_LABELS = {"open": ("OPEN", 15.0), "reject": ("REJECT", 5.0)}  # 狀態 → (LCD 字樣, 顯示幾秒)
+LCD_POLL_S = 0.5           # 兩輪量測之間多久檢查一次閘門狀態
+
+
+def read_gate_status(path: str, now: float | None = None) -> str | None:
+    """gate.py 寫的狀態檔 → LCD 字樣；檔案不存在、壞掉、過期或是關閘都回 None。"""
+    if not path:
+        return None
+    try:
+        d = json.loads(Path(path).read_text())
+        label, ttl = GATE_LABELS[d["state"]]
+        age = (now or time.time()) - float(d["ts"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return label if -5 <= age <= ttl else None
+
+
 def lcd_lines(bin_id: str, fill_pct: float | None, weight_g: float | None,
-              blocked: bool, scale_enabled: bool = True) -> tuple[str, str]:
-    """第一行 `NTNU-01  62%`，第二行重量 `1.25 kg`（遮擋時後面加 BLOCKED）。"""
+              blocked: bool, scale_enabled: bool = True, gate: str | None = None) -> tuple[str, str]:
+    """第一行 `NTNU-01  62%`，第二行重量 `1.25 kg`，後面加擋板狀態（OPEN／REJECT），沒有時遮擋加 BLOCKED。"""
     fill = "--%" if fill_pct is None else f"{fill_pct:.0f}%"
     line1 = f"{bin_id}  {fill}"
     if not scale_enabled:
@@ -112,7 +132,9 @@ def lcd_lines(bin_id: str, fill_pct: float | None, weight_g: float | None,
         line2 = "-- kg"
     else:
         line2 = f"{weight_g / 1000:.2f} kg"
-    if blocked:
+    if gate:
+        line2 += f" {gate}"
+    elif blocked:
         line2 += " BLOCKED"
     return line1[:LCD_COLS], line2[:LCD_COLS]
 
@@ -362,7 +384,7 @@ def post_telemetry(api: str, token: str, payload: dict) -> bool:
 class Node:
     def __init__(self, bin_id: str, depth_cm: float, sonar, scale=None,
                  hx_scale: float | None = None, hx_offset: float | None = None,
-                 lcd: Lcd | None = None, poster=None):
+                 lcd: Lcd | None = None, poster=None, gate_status_file: str = ""):
         self.bin_id = bin_id
         self.depth_cm = depth_cm
         self.sonar = sonar
@@ -373,6 +395,20 @@ class Node:
         self.poster = poster
         self.blocks = BlockDetector()
         self.last_fill: float | None = None
+        self.gate_status_file = gate_status_file
+        self._reading: tuple | None = None   # 最近一輪 (fill, weight, blocked)，閘門狀態變了就重畫
+        self._lcd_lines: tuple[str, str] | None = None
+
+    def refresh_lcd(self, now: float | None = None) -> None:
+        """依最近一輪讀值 + 閘門狀態更新 LCD；內容沒變就不寫 I²C。"""
+        if self.lcd is None or self._reading is None:
+            return
+        fill, weight, blocked = self._reading
+        lines = lcd_lines(self.bin_id, fill, weight, blocked, self.scale is not None,
+                          read_gate_status(self.gate_status_file, now))
+        if lines != self._lcd_lines:
+            self.lcd.show(*lines)
+            self._lcd_lines = lines
 
     def read_weight(self) -> float | None:
         if self.scale is None:
@@ -400,8 +436,9 @@ class Node:
         fill = self.last_fill  # 量不到時沿用上次的值，不亂報（和韌體一致）
         weight = self.read_weight()  # 超音波遮擋時照樣量重量
 
-        if self.lcd is not None:
-            self.lcd.show(*lcd_lines(self.bin_id, fill, weight, blocked, self.scale is not None))
+        self._reading = (fill, weight, blocked)
+        self._lcd_lines = None  # 每輪都重寫一次，LCD 接觸不良後也能恢復
+        self.refresh_lcd()
 
         log.info("dist=%s cm fill=%s%% weight=%s g blocked=%s",
                  "--" if dist is None else f"{dist:.1f}",
@@ -429,7 +466,13 @@ class Node:
                 log.exception("這輪發生錯誤，下一輪再試")
             if once:
                 return
-            time.sleep(max(interval - (time.monotonic() - t0), 1.0))
+            end = max(t0 + interval, time.monotonic() + 1.0)  # 至少等 1 秒
+            while (left := end - time.monotonic()) > 0:
+                time.sleep(min(LCD_POLL_S, left))
+                try:
+                    self.refresh_lcd()
+                except Exception:
+                    log.exception("LCD 更新失敗")
 
 
 # ----------------------------------------------------------------------------- CLI
@@ -545,7 +588,8 @@ def main(argv=None) -> int:
     lcd = Lcd(a.lcd_addr, enabled=not (a.dry or a.no_lcd))
 
     node = Node(a.bin, a.depth_cm, sonar, scale, hx_scale, hx_offset, lcd,
-                poster=lambda p: post_telemetry(a.api, a.token, p))
+                poster=lambda p: post_telemetry(a.api, a.token, p),
+                gate_status_file="" if a.dry else GATE_STATUS_FILE)
     log.info("開始：bin=%s api=%s 桶深=%.1f cm 間隔=%.0f s 秤重=%s%s", a.bin, a.api, a.depth_cm,
              a.interval, "開" if scale else "關", "（dry）" if a.dry else "")
     try:
