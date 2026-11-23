@@ -496,3 +496,76 @@ def test_servo_hold_keeps_pwm(monkeypatch):
     act = gate.Actuators(cfg, dry=False)
     act.open(); act.close()
     assert started == []
+
+
+def _cmd_client(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "cmd.db"))
+    return TestClient(main.app), {"Authorization": f"Bearer {main.ADMIN_TOKEN}"}
+
+
+def test_remote_commands_flow_and_auth(tmp_path, monkeypatch):
+    cl, adm = _cmd_client(tmp_path, monkeypatch)
+    with cl:
+        mk = lambda i: cl.post("/api/bins", headers=adm, json={"id": i, "name": i, "lat": 25.0, "lng": 121.5}).json()["device_token"]
+        tok_a, tok_b = mk("A"), mk("B")
+        assert cl.post("/api/bins/A/commands", json={"cmd": "gate_open"}).status_code == 401
+        assert cl.post("/api/bins/A/commands", headers=adm, json={"cmd": "rm -rf"}).status_code == 422
+        assert cl.post("/api/bins/A/commands", headers=adm, json={"cmd": "gate_mode", "args": {"mode": "x"}}).status_code == 422
+        assert cl.post("/api/bins/A/commands", headers=adm, json={"cmd": "lcd_text", "args": {"text": "x" * 33}}).status_code == 422
+        assert cl.post("/api/bins/A/commands", headers=adm, json={"cmd": "lcd_text", "args": {"text": "你好"}}).status_code == 422
+        assert cl.post("/api/bins/NOPE/commands", headers=adm, json={"cmd": "gate_open"}).status_code == 404
+        c1 = cl.post("/api/bins/A/commands", headers=adm, json={"cmd": "gate_open"}).json()
+        cl.post("/api/bins/A/commands", headers=adm, json={"cmd": "lcd_text", "args": {"text": "Hi", "evil": 1}})
+        assert c1["target"] == "gate" and c1["status"] == "pending"
+        # B 的 token 拿不到 A 的指令
+        assert cl.get("/api/device/commands", params={"bin_id": "A", "target": "gate"},
+                      headers={"X-Device-Token": tok_b}).status_code == 401
+        g = cl.get("/api/device/commands", params={"bin_id": "A", "target": "gate"}, headers={"X-Device-Token": tok_a}).json()
+        assert [c["cmd"] for c in g] == ["gate_open"]
+        assert cl.get("/api/device/commands", params={"bin_id": "A", "target": "gate"},
+                      headers={"X-Device-Token": tok_a}).json() == []          # 取走就不會再送
+        n = cl.get("/api/device/commands", params={"bin_id": "A", "target": "node"}, headers={"X-Device-Token": tok_a}).json()
+        assert n[0]["args"] == {"text": "Hi"}                                    # 多餘參數被丟掉
+        assert cl.post(f"/api/device/commands/{c1['id']}/result", params={"bin_id": "B"},
+                       headers={"X-Device-Token": tok_b}, json={"ok": True}).status_code == 404
+        assert cl.post(f"/api/device/commands/{c1['id']}/result", params={"bin_id": "A"},
+                       headers={"X-Device-Token": tok_a}, json={"ok": True, "result": "已開門"}).status_code == 204
+        hist = {c["cmd"]: c for c in cl.get("/api/bins/A/commands", headers=adm).json()}
+        assert hist["gate_open"]["status"] == "done" and hist["gate_open"]["result"] == "已開門"
+        assert hist["lcd_text"]["status"] == "sent"
+
+
+def test_stale_commands_expire(tmp_path, monkeypatch):
+    cl, adm = _cmd_client(tmp_path, monkeypatch)
+    with cl:
+        tok = cl.post("/api/bins", headers=adm, json={"id": "A", "name": "A", "lat": 25.0, "lng": 121.5}).json()["device_token"]
+        cl.post("/api/bins/A/commands", headers=adm, json={"cmd": "gate_open"})
+        with db.conn() as c:
+            c.execute("UPDATE commands SET created_at=created_at-?", (main.COMMAND_TTL_S + 5,))
+        assert cl.get("/api/bins/A/commands", headers=adm).json()[0]["status"] == "expired"
+        assert cl.get("/api/device/commands", params={"bin_id": "A", "target": "gate"},
+                      headers={"X-Device-Token": tok}).json() == []
+
+
+def test_gate_handles_remote_commands(tmp_path):
+    cfg = gate.Cfg()
+    cfg.mode_file = str(tmp_path / "mode")
+    act = gate.Actuators(cfg, dry=True)
+    g = gate.Gate(cfg, act, gate.Uploader(cfg, offline=True))
+    reports = []
+    g.reporter = SimpleNamespace(report=lambda *a: reports.append(a))
+    for i, (cmd, args) in enumerate([("gate_open", {}), ("gate_reject", {}), ("gate_mode", {"mode": "camera"}),
+                                     ("bogus", {})]):
+        g.commands.put({"id": i, "cmd": cmd, "args": args})
+    g.run_commands(100.0)
+    assert act.is_open and g.open_until == 100.0 + cfg.manual_open_s
+    assert [r[1] for r in reports] == [True, True, True, False]
+    assert (tmp_path / "mode").read_text() == "camera" and g.restart_mode == "camera"
+    g.step([], 105.0)
+    assert act.is_open                       # 手動開門維持 10 秒
+    g.step([], 111.0)
+    assert not act.is_open
+    g.handle_command("gate_open", {}, 200.0)
+    g.handle_command("gate_close", {}, 201.0)
+    assert not act.is_open

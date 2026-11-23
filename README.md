@@ -145,6 +145,12 @@ python3 edge/vision-gate/gate.py --backend mock --scenario edge/vision-gate/scen
 3. 匯出 IMX500：`yolo export model=best.pt format=imx`，把產出的 `network.rpk` 放到 `/opt/smartbin/models/`
 4. 驗證用 **site-held-out split**（測試集用沒訓練過的地點），避免重蹈 Paper 3 同機位切分過度樂觀的問題。
 
+**遠端控制（#41）**：調度台焦點桶卡片的「遠端控制」可以開關擋板、測試拒收、切換劇本／相機模式、在 LCD 顯示英數字、立即量測、秤重歸零。Pi 每 2 秒主動向後端拿指令（不用開 port）。`gate.py` 要用 `run-gate.sh` 啟動，模式切換才會自動重開；相機模式啟動失敗（例如沒有模型）會自動退回劇本。
+```bash
+GATE_MODEL=~/yolo11n.onnx edge/vision-gate/run-gate.sh --open-angle 90 --close-angle 0   # 其他參數原樣傳給 gate.py
+```
+`GATE_MODE_FILE` 預設 `/tmp/smartbin-gate-mode`，重開機回到劇本模式。秤重歸零只在程式執行期間有效，要長期保留請把回報的 `HX711_OFFSET` 寫回 `node.env`。
+
 **Demo L1（免訓練，#11）**：Pi 4 + USB 攝影機，直接用 COCO 預訓練的 YOLO11n。杯子、瓶子照常開閘；人（手）在投入口就不關閘；手提袋、背包、行李箱當垃圾袋拒收；其他物體不開閘，太大一樣拒收。
 ```bash
 pip install ultralytics                                     # 只有匯出時需要，Pi 上不用裝
@@ -165,6 +171,8 @@ python edge/vision-gate/gate.py --backend onnx --model yolo11n.onnx --labels coc
 | POST | `/api/bins`、`/api/dispatch/plan`、`/api/events/{id}/resolve` | `Authorization: Bearer <ADMIN_TOKEN>` |
 | GET | `/api/events`、`/api/dispatch/latest`、`/api/admin/bins`（調度台用，多 `last_seen`、`open_events`、最新原始讀值 `dist_mm`、`blocked`） | admin |
 | GET | `/api/bins/{id}/history?hours=1&max_points=300`（最近 N 小時 telemetry，依時間排序；`hours` ≤ 168，點數超過 `max_points` 會等距抽樣並保留最後一筆） | admin |
+| POST、GET | `/api/bins/{id}/commands`（遠端控制：`gate_open`、`gate_close`、`gate_reject`、`gate_mode`、`lcd_text`、`measure_now`、`tare`；60 秒沒被裝置取走就逾時） | admin |
+| GET | `/api/device/commands?bin_id=&target=gate\|node`、POST `/api/device/commands/{id}/result?bin_id=`（裝置輪詢指令、回報結果） | `X-Device-Token` |
 | POST | `/line/webhook` | LINE 簽章驗證 |
 
 ## 下一步

@@ -101,6 +101,18 @@
   .routekpi b{display:block;font-size:18px}
   .routekpi span{font-size:12px;color:var(--muted)}
   ol{padding-left:20px;margin:6px 0;font-size:13px}
+  /* 遠端控制（#41） */
+  .ctl{display:grid;gap:8px;margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
+  .ctl .row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .ctl .row>span{font-size:12px;color:var(--muted);width:56px;flex:none}
+  .ctl button{padding:6px 10px;font-size:13px}
+  .ctl button.warn{background:var(--r)}
+  .ctl button.alt{background:var(--b)}
+  .ctl input{font:inherit;flex:1;min-width:120px;padding:6px 8px;border:1px solid var(--line);border-radius:8px}
+  .cmds{display:grid;gap:4px;font-size:12px;max-height:150px;overflow:auto}
+  .cmds div{display:flex;gap:6px;align-items:baseline}
+  .cmds .st{font-weight:600;white-space:nowrap}
+  .cmds .rs{color:var(--muted);flex:1;min-width:0}
 </style>
 </head>
 <body>
@@ -136,6 +148,22 @@
           <div class="seg" id="range"><button data-h="1">1 小時</button><button data-h="6">6 小時</button><button data-h="24">24 小時</button></div>
         </div>
         <div id="hist-wrap"><canvas id="hist"></canvas></div>
+        <div class="ctl" id="ctl">
+          <h2 style="font-size:13px">遠端控制 <small>指令約 2 秒內送達 Pi</small></h2>
+          <div class="row"><span>擋板</span>
+            <button data-cmd="gate_open">開門</button><button data-cmd="gate_close" class="ghost">關門</button>
+            <button data-cmd="gate_reject" class="warn">測試拒收</button></div>
+          <div class="row"><span>閘門模式</span>
+            <button data-cmd="gate_mode" data-mode="mock" class="ghost">劇本</button>
+            <button data-cmd="gate_mode" data-mode="camera" class="alt">相機即時辨識</button></div>
+          <div class="row"><span>LCD</span>
+            <input id="lcd-text" maxlength="32" placeholder="英數字，最多 32 字（LCD 不支援中文）">
+            <button data-cmd="lcd_text">顯示</button></div>
+          <div class="row"><span>感測</span>
+            <button data-cmd="measure_now" class="ghost">立即量測</button>
+            <button data-cmd="tare" class="ghost">秤重歸零</button></div>
+          <div class="cmds" id="cmds"></div>
+        </div>
       </section>
 
       <section class="card">
@@ -262,7 +290,7 @@ function selectBin(id){
   histBin=id;
   document.querySelectorAll('.bin[data-id]').forEach(el=>el.classList.toggle('sel',el.dataset.id===id));
   const b=binsById[id]; if(b) map.panTo([b.lat,b.lng]);
-  renderFocus(); loadHistory();
+  renderFocus(); loadHistory(); loadCommands();
   if(innerWidth<960) document.getElementById('focus').scrollIntoView({behavior:'smooth',block:'start'});
 }
 function renderFocus(){
@@ -326,6 +354,37 @@ async function loadHistory(signal){
   drawHistory(rows);
 }
 
+// ---- 遠端控制（#41）
+const CMD={gate_open:'開門',gate_close:'關門',gate_reject:'測試拒收',gate_mode:'切換模式',lcd_text:'LCD 文字',measure_now:'立即量測',tare:'秤重歸零'};
+const CST={pending:['等待 Pi','#c98a00'],sent:['執行中','#2563eb'],done:['完成','#1f6f4a'],failed:['失敗','#c0392b'],expired:['逾時（Pi 沒回應）','#6b7280']};
+async function loadCommands(signal){
+  if(!histBin) return;
+  const r=await fetch(`/api/bins/${encodeURIComponent(histBin)}/commands?limit=6`,{headers:H,signal});
+  if(!r.ok||signal?.aborted) return;
+  const cs=await r.json();
+  document.getElementById('cmds').innerHTML=cs.map(c=>{const [t,col]=CST[c.status]||[c.status,'#999'];
+    const arg=c.cmd==='gate_mode'?(c.args.mode==='camera'?'→相機':'→劇本'):c.cmd==='lcd_text'?`「${esc(c.args.text)}」`:'';
+    return `<div><span class="t">${new Date(c.created_at*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}</span>
+      <b>${CMD[c.cmd]||esc(c.cmd)}${arg}</b><span class="st" style="color:${col}">${t}</span><span class="rs">${esc(c.result??'')}</span></div>`}).join('');
+}
+let cmdPoll=null;
+document.getElementById('ctl').onclick=async e=>{
+  const btn=e.target.closest('button[data-cmd]'); if(!btn||!histBin) return;
+  const cmd=btn.dataset.cmd, args={};
+  if(cmd==='gate_mode') args.mode=btn.dataset.mode;
+  if(cmd==='lcd_text'){args.text=document.getElementById('lcd-text').value.trim(); if(!args.text){alert('請輸入文字');return}}
+  if(cmd==='tare'&&!confirm('確定把目前的重量設為 0？秤上請只放空桶。')) return;
+  btn.disabled=true;
+  try{
+    const r=await fetch(`/api/bins/${encodeURIComponent(histBin)}/commands`,{method:'POST',headers:H,body:JSON.stringify({cmd,args})});
+    if(!r.ok){alert('送出失敗：'+await r.text());return}
+    if(cmd==='lcd_text') document.getElementById('lcd-text').value='';
+  }finally{btn.disabled=false}
+  // 送出後每秒刷新 15 秒，看 Pi 有沒有執行
+  clearInterval(cmdPoll); let n=0; loadCommands();
+  cmdPoll=setInterval(()=>{loadCommands(); if(++n>=15) clearInterval(cmdPoll)},1000);
+};
+
 function setLive(){
   const el=document.getElementById('live'), stale=Date.now()-lastOk>PERIOD*3;
   el.classList.toggle('stale',stale);
@@ -340,6 +399,7 @@ async function refresh(){
   const [b,e]=await Promise.allSettled([loadBins(controller.signal),loadEvents(controller.signal)]);
   if(b.value){renderKpis(b.value, e.value??0); renderFocus(); lastOk=Date.now()}
   if(!controller.signal.aborted) await loadHistory(controller.signal).catch(()=>{});
+  if(!controller.signal.aborted) await loadCommands(controller.signal).catch(()=>{});
   clearTimeout(timeout);
   if(poll===controller) poll=null;
   setLive();

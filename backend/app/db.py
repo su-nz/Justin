@@ -39,6 +39,18 @@ CREATE TABLE IF NOT EXISTS events (
     resolved    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_evt_ts ON events(ts);
+CREATE TABLE IF NOT EXISTS commands (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    bin_id      TEXT NOT NULL REFERENCES bins(id),
+    target      TEXT NOT NULL,          -- gate | node
+    cmd         TEXT NOT NULL,
+    args        TEXT,
+    status      TEXT NOT NULL DEFAULT 'pending',  -- pending | sent | done | failed | expired
+    result      TEXT,
+    created_at  REAL NOT NULL,
+    updated_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cmd_bin ON commands(bin_id, status);
 CREATE TABLE IF NOT EXISTS dispatch_plans (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at  REAL NOT NULL,

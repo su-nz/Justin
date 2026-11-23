@@ -65,6 +65,10 @@ class Cfg:
     spool: str = os.environ.get("GATE_SPOOL", "/var/lib/smartbin/spool.jsonl")
     # 擋板最新動作，給 node_pi.py 顯示在 LCD（#36）；空字串 = 不寫
     status_file: str = os.environ.get("GATE_STATUS_FILE", "/tmp/smartbin-gate.json")
+    # 遠端控制（#41）
+    command_period_s: float = 2.0
+    manual_open_s: float = 10.0
+    mode_file: str = os.environ.get("GATE_MODE_FILE", "/tmp/smartbin-gate-mode")  # run-gate.sh 依此選模式
 
 
 # ----------------------------------------------------------------------------- geometry
@@ -376,6 +380,42 @@ class BinStateWatcher(threading.Thread):
             self.poll()
 
 
+class CommandPoller(threading.Thread):
+    """每 2 秒向後端拿調度台送來的指令（#41），放進 gate.commands 由主迴圈執行；結果回報後端。"""
+
+    def __init__(self, cfg: Cfg, gate: "Gate"):
+        super().__init__(daemon=True)
+        self.cfg, self.gate = cfg, gate
+
+    def poll(self):
+        import httpx
+        try:
+            r = httpx.get(f"{self.cfg.api}/api/device/commands", timeout=5,
+                          params={"bin_id": self.cfg.bin_id, "target": "gate"},
+                          headers={"X-Device-Token": self.cfg.token})
+            if r.status_code != 200:
+                log.debug("commands unavailable: HTTP %s", r.status_code)
+                return
+            for c in r.json():
+                self.gate.commands.put(c)
+        except (httpx.HTTPError, ValueError) as e:
+            log.debug("commands unavailable: %s", e)
+
+    def report(self, cid: int, ok: bool, result):
+        import httpx
+        try:
+            httpx.post(f"{self.cfg.api}/api/device/commands/{cid}/result", timeout=5,
+                       params={"bin_id": self.cfg.bin_id}, json={"ok": ok, "result": result},
+                       headers={"X-Device-Token": self.cfg.token})
+        except httpx.HTTPError as e:
+            log.warning("command result not sent: %s", e)
+
+    def run(self):
+        while True:
+            self.poll()
+            time.sleep(self.cfg.command_period_s)
+
+
 # ----------------------------------------------------------------------------- main logic
 class Gate:
     def __init__(self, cfg: Cfg, act: Actuators, up: Uploader):
@@ -385,6 +425,47 @@ class Gate:
         self.last_reject = self.last_ground = -1e9
         self.next_ground = 0.0
         self.bin_full = False
+        self.commands: queue.Queue = queue.Queue()
+        self.reporter = None          # CommandPoller；離線時沒有
+        self.restart_mode: str | None = None  # 收到 gate_mode → 主迴圈結束，run-gate.sh 換模式重開
+
+    def run_commands(self, now: float) -> None:
+        """主迴圈每一幀呼叫：執行佇列裡的遠端指令（硬體只在主執行緒動）。"""
+        while True:
+            try:
+                c = self.commands.get_nowait()
+            except queue.Empty:
+                return
+            ok, result = self.handle_command(c["cmd"], c.get("args") or {}, now)
+            log.info("REMOTE %s %s → %s", c["cmd"], c.get("args") or "", result)
+            if self.reporter is not None:
+                self.reporter.report(c["id"], ok, result)
+
+    def handle_command(self, cmd: str, args: dict, now: float) -> tuple[bool, str]:
+        if cmd == "gate_open":
+            if not self.act.is_open:
+                self.act.open()
+            self.open_until = now + self.cfg.manual_open_s
+            return True, f"已開門 {self.cfg.manual_open_s:g} 秒"
+        if cmd == "gate_close":
+            self.open_until = 0.0
+            if self.act.is_open:
+                self.act.close()
+            return True, "已關門"
+        if cmd == "gate_reject":
+            self.act.reject()
+            return True, "已觸發紅燈與蜂鳴器"
+        if cmd == "gate_mode":
+            mode = args.get("mode")
+            if mode not in ("mock", "camera"):
+                return False, f"不支援的模式 {mode!r}"
+            try:
+                Path(self.cfg.mode_file).write_text(mode)
+            except OSError as e:
+                return False, f"寫不進模式檔：{e}"
+            self.restart_mode = mode
+            return True, f"切換到{'相機即時辨識' if mode == 'camera' else '劇本'}模式，閘門重新啟動中"
+        return False, f"閘門不支援指令 {cmd}"
 
     def step(self, dets, now):
         c = self.cfg
@@ -491,6 +572,9 @@ def main(argv=None):
         watcher = BinStateWatcher(cfg, gate)
         watcher.poll()
         watcher.start()
+        if cfg.token:
+            gate.reporter = CommandPoller(cfg, gate)
+            gate.reporter.start()
     t = time.time()
     attempts, processed, det_s, w0 = 0, 0, 0.0, time.perf_counter()
     try:
@@ -501,6 +585,10 @@ def main(argv=None):
                 break
             det_s += time.perf_counter() - t0
             t = t + a.sim_dt if a.sim_dt else time.time()
+            gate.run_commands(t)
+            if gate.restart_mode:
+                log.info("模式切換為 %s，結束讓 run-gate.sh 重新啟動", gate.restart_mode)
+                break
             if dets is FRAME_UNAVAILABLE:
                 gate.step([], t)
             else:
