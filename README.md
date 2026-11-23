@@ -124,7 +124,9 @@ journalctl -u smartbin-node -f        # 每輪出現「已上傳」
 
 ## 視覺閘門（edge/vision-gate）
 
-攝影機架在桶上方往下看，一個畫面切兩個 ROI：投入口（拒收大袋 / 小垃圾才開閘、有手不關閘）與地面（覆蓋率連續兩次 ≥5% → `ground_waste`）。只上傳事件，不上傳影像。
+攝影機架在桶上方往下看，一個畫面切兩個 ROI：投入口（拒收大袋 / 小垃圾才開閘、有手不關閘）與地面（覆蓋率連續兩次 ≥5% → `ground_waste`）。平常只上傳事件和辨識結果，不上傳影像。
+
+**即時照片（#56，預設關閉）**：調整相機角度時，可以在調度台按「開始傳即時照片」，相機模式下每 2 秒上傳一張寬 320 px、JPEG 品質 50 的照片，**5 分鐘後自動停止**。照片只存在後端記憶體（每桶最新一張，30 秒失效），不寫入硬碟或資料庫，只有 admin 看得到。照片會拍到路人，用完請按停止。
 
 ```bash
 sudo apt install imx500-all python3-picamera2 python3-gpiozero
@@ -177,9 +179,11 @@ python edge/vision-gate/gate.py --backend onnx --model yolo11n.onnx --labels coc
 | POST | `/api/bins`、`/api/dispatch/plan`、`/api/events/{id}/resolve` | `Authorization: Bearer <ADMIN_TOKEN>` |
 | GET | `/api/events`、`/api/dispatch/latest`、`/api/admin/bins`（調度台用，多 `last_seen`、`open_events`、最新原始讀值 `dist_mm`、`blocked`） | admin |
 | GET | `/api/bins/{id}/history?hours=1&max_points=300`（最近 N 小時 telemetry，依時間排序；`hours` ≤ 168，點數超過 `max_points` 會等距抽樣並保留最後一筆） | admin |
-| POST、GET | `/api/bins/{id}/commands`（遠端控制：`gate_open`、`gate_close`、`gate_reject`、`gate_mode`、`gate_policy`、`lcd_text`、`measure_now`、`tare`；60 秒沒被裝置取走就逾時） | admin |
+| POST、GET | `/api/bins/{id}/commands`（遠端控制：`gate_open`、`gate_close`、`gate_reject`、`gate_mode`、`gate_policy`、`snapshot`、`lcd_text`、`measure_now`、`tare`；60 秒沒被裝置取走就逾時） | admin |
 | GET | `/api/device/commands?bin_id=&target=gate\|node`、POST `/api/device/commands/{id}/result?bin_id=`（裝置輪詢指令、回報結果） | `X-Device-Token` |
 | POST | `/api/device/status`（元件狀態：`source` 為 `node` 或 `gate`，只存最新一筆，上限 8 KB，不收影像） | `X-Device-Token` |
+| POST | `/api/device/snapshot?bin_id=`（即時照片，`image/jpeg` ≤ 80 KB，只存在記憶體） | `X-Device-Token` |
+| GET | `/api/bins/{id}/snapshot`（最新照片，30 秒失效） | admin |
 | GET | `/api/bins/{id}/status`（調度台「元件狀態」：超音波遮擋原因、秤重、LCD、閘門模式、相機 FPS、最後辨識結果） | admin |
 | POST | `/line/webhook` | LINE 簽章驗證 |
 

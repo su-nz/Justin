@@ -1,5 +1,6 @@
 """核心邏輯單元測試：python -m pytest tests -q（在 smartbin/ 下執行）"""
 import sys
+import pytest
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -702,3 +703,70 @@ def test_gate_drains_pending_commands_on_exit(tmp_path):
     g.drain_commands(0)
     assert (tmp_path / "policy").read_text() == "force_lock"
     assert reports[0][1] is True and reports[1][1] is False and "再按一次" in reports[1][2]
+
+
+def test_snapshot_memory_only_auth_size_and_ttl(tmp_path, monkeypatch):
+    cl, adm = _cmd_client(tmp_path, monkeypatch)
+    main.SNAPSHOTS.clear()
+    with cl:
+        mk = lambda i: cl.post("/api/bins", headers=adm, json={"id": i, "name": i, "lat": 25.0, "lng": 121.5}).json()["device_token"]
+        tok_a, tok_b = mk("A"), mk("B")
+        jpg = b"\xff\xd8\xff\xe0" + b"0" * 100
+        post = lambda body, tok, bid="A": cl.post("/api/device/snapshot", params={"bin_id": bid}, content=body,
+                                                  headers={"X-Device-Token": tok, "Content-Type": "image/jpeg"})
+        assert cl.get("/api/bins/A/snapshot", headers=adm).status_code == 404          # 預設沒有照片
+        assert post(jpg, tok_b).status_code == 401
+        assert post(b"PNG....", tok_a).status_code == 415
+        assert post(b"\xff\xd8" + b"0" * (main.SNAPSHOT_MAX_BYTES + 1), tok_a).status_code == 413
+        assert post(jpg, tok_a).status_code == 204
+        assert cl.get("/api/bins/A/snapshot").status_code == 401
+        r = cl.get("/api/bins/A/snapshot", headers=adm)
+        assert r.status_code == 200 and r.content == jpg and r.headers["cache-control"] == "no-store"
+        main.SNAPSHOTS["A"] = (main.time.time() - main.SNAPSHOT_TTL_S - 1, jpg)       # 過期
+        assert cl.get("/api/bins/A/snapshot", headers=adm).status_code == 404
+        with db.conn() as c:                                                            # 沒有落地到資料庫
+            assert all("snap" not in r[0] for r in c.execute("SELECT name FROM sqlite_master"))
+        c1 = cl.post("/api/bins/A/commands", headers=adm, json={"cmd": "snapshot", "args": {"on": 1, "x": 2}}).json()
+        assert c1["target"] == "gate" and c1["args"] == {"on": True}
+
+
+def test_gate_snapshot_command_needs_camera_mode_and_expires(tmp_path, monkeypatch):
+    cfg, act, g = _policy_gate(tmp_path)
+    g.mode = "mock"
+    assert g.handle_command("snapshot", {"on": True}, 0)[0] is False                  # 劇本模式沒有照片
+    g.mode = "onnx"
+    ok, msg = g.handle_command("snapshot", {"on": True}, 0)
+    assert ok and g.snapshot()["snapshot"]["active"] and "5 分鐘" in msg
+    g.handle_command("snapshot", {"on": False}, 0)
+    assert not g.snapshot()["snapshot"]["active"]
+    # 沒開啟時 reporter 不上傳
+    posted = []
+    monkeypatch.setattr(gate, "encode_snapshot", lambda *a: posted.append(1) or b"x")
+    g.detector = SimpleNamespace(last_frame=object())
+    assert gate.StatusReporter(cfg, g).post_snapshot() is False and posted == []
+
+
+def test_encode_snapshot_is_small_jpeg():
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("cv2")
+    frame = (np.random.rand(480, 640, 3) * 255).astype("uint8")
+    jpg = gate.encode_snapshot(frame, 320, 50)
+    assert jpg[:2] == b"\xff\xd8" and len(jpg) < 80 * 1024
+
+
+def test_reporter_uploads_snapshot_only_while_active(tmp_path, monkeypatch):
+    import httpx
+    cfg, act, g = _policy_gate(tmp_path)
+    g.mode, g.detector = "onnx", SimpleNamespace(last_frame=object())
+    monkeypatch.setattr(gate, "encode_snapshot", lambda *a: b"\xff\xd8jpg")
+    sent = []
+    monkeypatch.setattr(httpx, "post", lambda url, **kw: sent.append((url, kw)) or SimpleNamespace(status_code=204))
+    rep = gate.StatusReporter(cfg, g)
+    assert rep.post_snapshot() is False and not sent
+    g.handle_command("snapshot", {"on": True}, 0)
+    assert rep.post_snapshot() is True
+    url, kw = sent[-1]
+    assert url.endswith("/api/device/snapshot") and kw["content"] == b"\xff\xd8jpg"
+    assert kw["headers"]["Content-Type"] == "image/jpeg"
+    g.snapshot_until = 0                     # 5 分鐘到 → 自動停
+    assert rep.post_snapshot() is False

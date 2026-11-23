@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -91,7 +91,7 @@ class EventIn(BaseModel):
 
 
 # 遠端控制（#41）：指令 → 由哪支程式執行
-COMMANDS = {"gate_open": "gate", "gate_close": "gate", "gate_reject": "gate", "gate_mode": "gate", "gate_policy": "gate",
+COMMANDS = {"gate_open": "gate", "gate_close": "gate", "gate_reject": "gate", "gate_mode": "gate", "gate_policy": "gate", "snapshot": "gate",
             "lcd_text": "node", "measure_now": "node", "tare": "node"}
 GATE_MODES = {"mock", "camera"}
 GATE_POLICIES = {"auto", "force_open", "force_lock"}
@@ -109,6 +109,10 @@ class CommandResultIn(BaseModel):
 
 
 STATUS_MAX_BYTES = 8192  # 元件狀態只有文字與座標，不收影像（#53）
+# 即時照片（#56）：只放記憶體、每桶只留最新一張，不寫硬碟或資料庫；30 秒沒更新就失效
+SNAPSHOT_MAX_BYTES = 80 * 1024
+SNAPSHOT_TTL_S = 30
+SNAPSHOTS: dict[str, tuple[float, bytes]] = {}
 
 
 class DeviceStatusIn(BaseModel):
@@ -287,7 +291,29 @@ def device_status(st: DeviceStatusIn, x_device_token: str = Header("")):
                   (st.bin_id, st.source, time.time(), data))
 
 
+@app.post("/api/device/snapshot", status_code=204)
+async def device_snapshot(request: Request, bin_id: str, x_device_token: str = Header("")):
+    """閘門上傳低畫質照片（調度台開啟時才會送）。只存在記憶體。"""
+    device_auth(bin_id, x_device_token)
+    body = await request.body()
+    if len(body) > SNAPSHOT_MAX_BYTES:
+        raise HTTPException(413, f"snapshot larger than {SNAPSHOT_MAX_BYTES} bytes")
+    if not body.startswith(b"\xff\xd8"):
+        raise HTTPException(415, "JPEG only")
+    SNAPSHOTS[bin_id] = (time.time(), body)
+
+
 # ---------------------------------------------------------------- routes: admin
+@app.get("/api/bins/{bin_id}/snapshot", dependencies=[Depends(require_admin)])
+def bin_snapshot(bin_id: str):
+    snap = SNAPSHOTS.get(bin_id)
+    if not snap or time.time() - snap[0] > SNAPSHOT_TTL_S:
+        SNAPSHOTS.pop(bin_id, None)
+        raise HTTPException(404, "no recent snapshot")
+    return Response(snap[1], media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store", "X-Snapshot-Ts": f"{snap[0]:.3f}"})
+
+
 @app.get("/api/bins/{bin_id}/status", dependencies=[Depends(require_admin)])
 def bin_status(bin_id: str):
     """調度台：各元件最新狀態，含伺服器收到的時間 ts（前端據此判斷「未回報」）。"""
@@ -311,6 +337,8 @@ def create_command(bin_id: str, body: CommandIn):
         if body.args.get("mode") not in GATE_MODES:
             raise HTTPException(422, f"mode must be one of {sorted(GATE_MODES)}")
         args = {"mode": body.args["mode"]}
+    elif body.cmd == "snapshot":
+        args = {"on": bool(body.args.get("on"))}
     elif body.cmd == "gate_policy":
         if body.args.get("policy") not in GATE_POLICIES:
             raise HTTPException(422, f"policy must be one of {sorted(GATE_POLICIES)}")
