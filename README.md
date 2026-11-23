@@ -105,7 +105,7 @@ HX711_OFFSET=... python3 edge/pi-demo/node_pi.py --calibrate 600   # 放 600 g �
 export SMARTBIN_API=http://<server>:8000 BIN_ID=NTNU-01 DEVICE_TOKEN=<token> HX711_OFFSET=... HX711_SCALE=...
 python3 edge/pi-demo/node_pi.py --depth-cm 30
 ```
-筆電測試用 `--dry`（假距離、假重量，不碰 GPIO）；沒接秤用 `--no-scale`。HX711 讀不到時該輪不送 `weight_g`，其他照常上傳。
+筆電測試用 `--dry`（假距離、假重量，不碰 GPIO）；沒接秤用 `--no-scale`。HX711 讀不到時該輪不送 `weight_g`，其他照常上傳。重量絕對值小於 50 g 會當作 0（空秤零點漂移，#46），用 `--zero-band-g` 或 `HX711_ZERO_BAND_G` 調整，0 = 停用。
 
 **接近即時（#43）**：`--fast --interval 1` 每輪只取超音波 5 筆、HX711 4 筆（約 0.6 秒），LCD 和上傳約每秒一次；可以用 `--sonar-samples`、`--hx-samples` 微調。網站加 `?live=1`（調度台、市民地圖）每秒更新。相機模式的 `gate.py` 會限制 onnxruntime 用 `GATE_ORT_THREADS`（預設 2）個核心、並以 `GATE_NICE`（預設 10）降低優先權，避免搶走感測程式量測時序。
 
