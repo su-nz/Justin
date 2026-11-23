@@ -61,7 +61,10 @@ class Cfg:
     led_green: int = 23
     led_red: int = 24
     buzzer_pin: int = 25
-    state_period_s: float = 60.0    # 多久向後端查一次桶子狀態
+    state_period_s: float = 3.0     # 多久向後端查一次桶子狀態（#55：原本 60 秒，桶滿／清空要等太久）
+    # 感測被擋（fault）時也鎖閘門：不知道桶滿不滿，先不收（#55；#30 的可切換實作）
+    lock_when_blocked: bool = os.environ.get("GATE_LOCK_BLOCKED", "1") != "0"
+    policy_file: str = os.environ.get("GATE_POLICY_FILE", "/tmp/smartbin-gate-policy")
     spool: str = os.environ.get("GATE_SPOOL", "/var/lib/smartbin/spool.jsonl")
     # 擋板最新動作，給 node_pi.py 顯示在 LCD（#36）；空字串 = 不寫
     status_file: str = os.environ.get("GATE_STATUS_FILE", "/tmp/smartbin-gate.json")
@@ -381,6 +384,7 @@ class BinStateWatcher(threading.Thread):
         for b in bins:
             if b["id"] == self.cfg.bin_id:
                 self.gate.bin_full = b["state"] == "full" or bool(b.get("full_for_gate", False))
+                self.gate.bin_blocked = b["state"] == "fault"
 
     def run(self):
         while True:
@@ -396,6 +400,8 @@ class CommandPoller(threading.Thread):
         self.cfg, self.gate = cfg, gate
 
     def poll(self):
+        if self.gate.stopping:  # 快結束了就不要再拿指令，免得拿了卻沒執行
+            return
         import httpx
         try:
             r = httpx.get(f"{self.cfg.api}/api/device/commands", timeout=5,
@@ -432,6 +438,8 @@ class StatusReporter(threading.Thread):
         self.cfg, self.gate = cfg, gate
 
     def post(self) -> bool:
+        if self.gate.stopping:  # 程式結束時 shutdown 會關門，那是暫態，不要報給調度台
+            return False
         import httpx
         try:
             r = httpx.post(f"{self.cfg.api}/api/device/status", timeout=5,
@@ -457,6 +465,16 @@ class Gate:
         self.last_reject = self.last_ground = -1e9
         self.next_ground = 0.0
         self.bin_full = False
+        self.bin_blocked = False
+        self.stopping = False
+        self.policy = self._load_policy()   # auto | force_open | force_lock（#55）
+        self.reason = "等待投入"             # 目前判斷原因，給調度台看
+        if self.policy == "force_open":      # 換模式重開後立刻套用保留的策略
+            self.act.open()
+            self.open_until = float("inf")
+            self.reason = "強制開啟"
+        elif self.policy == "force_lock":
+            self.reason = "強制鎖定"
         self.commands: queue.Queue = queue.Queue()
         self.reporter = None          # CommandPoller；離線時沒有
         self.restart_mode: str | None = None  # 收到 gate_mode → 主迴圈結束，run-gate.sh 換模式重開
@@ -466,6 +484,29 @@ class Gate:
         self.last_dets: list = []
         self.last_dets_ts: float | None = None
         self.last_action: tuple[str, float] | None = None
+
+    POLICIES = ("auto", "force_open", "force_lock")
+    LABEL = {"cup": "杯子", "bottle": "瓶子", "can": "鋁罐", "paper": "紙", "lunchbox": "便當盒",
+             "garbage_bag": "垃圾袋", "hand": "手／人", "litter": "垃圾", "other": "其他物品"}
+
+    def _load_policy(self) -> str:
+        try:
+            p = Path(self.cfg.policy_file).read_text().strip()
+        except OSError:
+            return "auto"
+        return p if p in self.POLICIES else "auto"
+
+    def lock_reason(self) -> str | None:
+        """目前不能收垃圾的原因；None = 可以收。"""
+        if self.policy == "force_open":  # 強制開啟優先於所有鎖定
+            return None
+        if self.policy == "force_lock":
+            return "強制鎖定"
+        if self.bin_full:
+            return "桶滿鎖定"
+        if self.bin_blocked and self.cfg.lock_when_blocked:
+            return "感測被擋鎖定"
+        return None
 
     def note_frame(self, dets, now: float) -> None:
         """記下最近一次有辨識到東西的結果（最多 10 個），給調度台畫示意框。"""
@@ -480,11 +521,27 @@ class Gate:
             "mode": self.mode,
             "camera": dict(self.camera),
             "gate": {"open": bool(self.act.is_open), "bin_full_lock": bool(self.bin_full),
+                     "bin_blocked": bool(self.bin_blocked), "lock_when_blocked": self.cfg.lock_when_blocked,
+                     "policy": self.policy, "lock": self.lock_reason(), "reason": self.reason,
                      "last_reject_ts": getattr(self.act, "last_reject_ts", None)},
             "detections": {"items": self.last_dets, "ts": self.last_dets_ts,
                            "slot_roi": list(c.slot_roi), "ground_roi": list(c.ground_roi)},
             "last_action": None if self.last_action is None else {"what": self.last_action[0], "ts": self.last_action[1]},
         }
+
+    def drain_commands(self, now: float) -> None:
+        """程式結束前：已拿到但還沒執行的指令不能默默消失。策略只寫檔，照做；其他回報失敗請使用者再按一次。"""
+        while True:
+            try:
+                c = self.commands.get_nowait()
+            except queue.Empty:
+                return
+            if c["cmd"] in ("gate_policy", "gate_mode"):
+                ok, result = self.handle_command(c["cmd"], c.get("args") or {}, now)
+            else:
+                ok, result = False, "閘門正在重新啟動，請再按一次"
+            if self.reporter is not None:
+                self.reporter.report(c["id"], ok, result)
 
     def run_commands(self, now: float) -> None:
         """主迴圈每一幀呼叫：執行佇列裡的遠端指令（硬體只在主執行緒動）。"""
@@ -512,6 +569,25 @@ class Gate:
         if cmd == "gate_reject":
             self.act.reject()
             return True, "已觸發紅燈與蜂鳴器"
+        if cmd == "gate_policy":
+            policy = args.get("policy")
+            if policy not in self.POLICIES:
+                return False, f"不支援的策略 {policy!r}"
+            self.policy = policy
+            try:
+                Path(self.cfg.policy_file).write_text(policy)
+            except OSError as e:
+                log.warning("閘門策略寫不進檔案（重開後會回到 auto）：%s", e)
+            if policy == "force_open":
+                if not self.act.is_open:
+                    self.act.open()
+            elif policy == "force_lock":
+                self.open_until = 0.0
+                if self.act.is_open:
+                    self.act.close()
+            else:
+                self.open_until = now  # 回到自動：交給相機判斷，沒看到東西就關
+            return True, {"auto": "自動（相機判斷）", "force_open": "強制開啟", "force_lock": "強制鎖定"}[policy]
         if cmd == "gate_mode":
             mode = args.get("mode")
             if mode not in ("mock", "camera"):
@@ -538,8 +614,14 @@ class Gate:
 
         self.reject_streak = self.reject_streak + 1 if big else 0
         self.small_streak = self.small_streak + 1 if small and not big else 0
+        lock = self.lock_reason()
 
-        if self.reject_streak >= c.confirm_frames:
+        if self.policy == "force_open":  # 強制開啟：不管看到什麼都開著（地面監看照常）
+            if not self.act.is_open:
+                self.act.open()
+            self.open_until = now + c.open_s
+            self.reason = "強制開啟"
+        elif self.reject_streak >= c.confirm_frames:
             if self.act.is_open and not hand:
                 self.act.close()
             if self.reject_streak == c.confirm_frames:  # 每次投入都要提示；冷卻只限制上傳
@@ -549,7 +631,7 @@ class Gate:
                 self.up.emit("bag_rejected", d[1], {"cls": d[0], "area_ratio": round(area_ratio(d[2], c.slot_roi), 2)})
                 self.last_reject = now
         elif self.small_streak >= c.confirm_frames:
-            if self.bin_full:  # 桶滿：小垃圾也不開，市民由地圖 / LINE 導向下一個有空位的桶
+            if lock:  # 桶滿／被擋／強制鎖定：小垃圾也不開，市民由地圖 / LINE 導向下一個有空位的桶
                 if self.small_streak == c.confirm_frames:
                     self.act.reject()
             else:
@@ -557,8 +639,10 @@ class Gate:
                     self.act.open()
                 self.open_until = now + c.open_s
 
-        if self.act.is_open and now > self.open_until and not hand:
+        if self.policy != "force_open" and self.act.is_open and now > self.open_until and not hand:
             self.act.close()
+        if self.policy != "force_open":
+            self.reason = self._explain(dets, slot, big, small, hand, lock, now)
 
         # 2) 地面監看：低頻率計算覆蓋率
         if now >= self.next_ground:
@@ -571,6 +655,33 @@ class Gate:
                 conf = max(d[1] for d in dets if d[2] in gboxes)
                 self.up.emit("ground_waste", conf, {"coverage": round(cov, 3), "n": len(gboxes)})
                 self.last_ground = now
+
+
+    def _explain(self, dets, slot, big, small, hand, lock, now) -> str:
+        """一句話說明這一幀閘門為什麼是現在這樣（#55）。"""
+        c, name = self.cfg, lambda d: self.LABEL.get(d[0], d[0])
+        if big and self.reject_streak >= c.confirm_frames:
+            d = max(big, key=lambda x: x[1])
+            return f"拒收：{'垃圾袋' if d[0] in c.bag else name(d) + '太大'}"
+        if lock:
+            return f"{lock}：看到{name(small[0])}也不收" if small else lock
+        if self.act.is_open:
+            if hand and now > self.open_until:
+                return "投入口有手，暫不關門"
+            if small:
+                return f"開門：看到{name(small[0])}"
+            return f"開啟中，{max(0, self.open_until - now):.0f} 秒後關門"
+        if small or big:
+            return "確認中…"
+        seen = [d for d in dets if d[1] >= c.conf and d not in slot]
+        others = [d for d in slot if d[0] not in c.small and d[0] not in c.no_close]
+        if others:
+            return f"投入口有{name(others[0])}，不是可投物品"
+        if seen:
+            return f"看到{name(seen[0])}，但不在投入口"
+        if hand:
+            return "投入口有手，沒有可投物品"
+        return "等待投入"
 
 
 def actuators_dry(a) -> bool:
@@ -684,6 +795,8 @@ def main(argv=None):
     except KeyboardInterrupt:
         pass
     finally:
+        gate.stopping = True
+        gate.drain_commands(time.time())
         act.shutdown()
         time.sleep(0.5)
     return up

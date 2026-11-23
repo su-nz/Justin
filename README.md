@@ -147,6 +147,8 @@ python3 edge/vision-gate/gate.py --backend mock --scenario edge/vision-gate/scen
 3. 匯出 IMX500：`yolo export model=best.pt format=imx`，把產出的 `network.rpk` 放到 `/opt/smartbin/models/`
 4. 驗證用 **site-held-out split**（測試集用沒訓練過的地點），避免重蹈 Paper 3 同機位切分過度樂觀的問題。
 
+**閘門策略與鎖定（#55）**：閘門每 3 秒向後端查桶況（原本 60 秒）；桶滿，或感測被擋（`fault`，`GATE_LOCK_BLOCKED=0` 可關閉）時鎖住，看到可投物品也不開，改用紅燈和蜂鳴器提示。調度台的「閘門策略」可以切換**自動**（相機判斷）、**強制開啟**、**強制鎖定**（有手時仍不關門），策略存在 `GATE_POLICY_FILE`（預設 `/tmp/smartbin-gate-policy`），換模式重開後也會保留。調度台會顯示閘門目前的判斷原因，例如「桶滿鎖定」「看到杯子，但不在投入口」。
+
 **元件狀態（#53）**：調度台焦點卡片顯示每個元件的狀態。`node_pi.py` 在狀態改變或每 10 秒上報（超音波「距離太近／收不到回波」與連續輪數、秤重逾時／未校正、LCD 錯誤），`gate.py` 每 2 秒上報（模式、相機 FPS、擋板、最後辨識到的物品與座標）。**只傳辨識結果，不傳影像**，調度台用示意框畫出物品位置。
 
 **遠端控制（#41）**：調度台焦點桶卡片的「遠端控制」可以開關擋板、測試拒收、切換劇本／相機模式、在 LCD 顯示英數字、立即量測、秤重歸零。Pi 每 2 秒主動向後端拿指令（不用開 port）。`gate.py` 要用 `run-gate.sh` 啟動，模式切換才會自動重開；相機模式啟動失敗（例如沒有模型）會自動退回劇本。
@@ -175,7 +177,7 @@ python edge/vision-gate/gate.py --backend onnx --model yolo11n.onnx --labels coc
 | POST | `/api/bins`、`/api/dispatch/plan`、`/api/events/{id}/resolve` | `Authorization: Bearer <ADMIN_TOKEN>` |
 | GET | `/api/events`、`/api/dispatch/latest`、`/api/admin/bins`（調度台用，多 `last_seen`、`open_events`、最新原始讀值 `dist_mm`、`blocked`） | admin |
 | GET | `/api/bins/{id}/history?hours=1&max_points=300`（最近 N 小時 telemetry，依時間排序；`hours` ≤ 168，點數超過 `max_points` 會等距抽樣並保留最後一筆） | admin |
-| POST、GET | `/api/bins/{id}/commands`（遠端控制：`gate_open`、`gate_close`、`gate_reject`、`gate_mode`、`lcd_text`、`measure_now`、`tare`；60 秒沒被裝置取走就逾時） | admin |
+| POST、GET | `/api/bins/{id}/commands`（遠端控制：`gate_open`、`gate_close`、`gate_reject`、`gate_mode`、`gate_policy`、`lcd_text`、`measure_now`、`tare`；60 秒沒被裝置取走就逾時） | admin |
 | GET | `/api/device/commands?bin_id=&target=gate\|node`、POST `/api/device/commands/{id}/result?bin_id=`（裝置輪詢指令、回報結果） | `X-Device-Token` |
 | POST | `/api/device/status`（元件狀態：`source` 為 `node` 或 `gate`，只存最新一筆，上限 8 KB，不收影像） | `X-Device-Token` |
 | GET | `/api/bins/{id}/status`（調度台「元件狀態」：超音波遮擋原因、秤重、LCD、閘門模式、相機 FPS、最後辨識結果） | admin |
