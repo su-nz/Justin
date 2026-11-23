@@ -63,7 +63,8 @@
   .seg{display:inline-flex;background:var(--soft);border-radius:8px;padding:2px}
   .seg button{background:transparent;color:var(--fg);padding:4px 10px;font-size:12px}
   .seg button.on{background:var(--card);box-shadow:0 1px 2px rgba(0,0,0,.12)}
-  #hist-wrap{position:relative;height:230px;margin-top:12px}
+  #hist-wrap{position:relative;height:360px;margin-top:12px}
+  @media(max-width:640px){#hist-wrap{height:280px}}
   .note{font-size:12px;color:var(--muted);margin:6px 0 0}
 
   /* 事件 */
@@ -149,7 +150,7 @@
         <p class="note" id="f-note"></p>
         <div class="head" style="margin:12px 0 0">
           <h2 style="font-size:13px">歷史曲線 <small>紫色底＝感測器被擋</small></h2>
-          <div class="seg" id="range"><button data-h="1">1 小時</button><button data-h="6">6 小時</button><button data-h="24">24 小時</button></div>
+          <div class="seg" id="range"><button data-h="0.16666667">10 分鐘</button><button data-h="1">1 小時</button><button data-h="6">6 小時</button><button data-h="24">24 小時</button></div>
         </div>
         <div id="hist-wrap"><canvas id="hist"></canvas></div>
         <div class="ctl" id="ctl">
@@ -230,7 +231,8 @@ const map=L.map('map').setView([25.0215,121.5310],15);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
 const binLayer=L.layerGroup().addTo(map), routeLayer=L.layerGroup().addTo(map);
 
-let histBin=null, histHours=1, binsById={}, chart=null, filter='all', lastOk=0;
+let histBin=null, histHours=0.16666667,  // 預設 10 分鐘（#51）
+    binsById={}, chart=null, filter='all', lastOk=0;
 
 function renderKpis(bins, openEv){
   const n=s=>bins.filter(b=>b.state===s).length;
@@ -329,11 +331,19 @@ function drawHistory(rows){
   rows.forEach((r,i)=>{if(r.blocked&&start==null) start=ms(r);
     if(start!=null&&(!r.blocked||i===rows.length-1)){bands.push([start,ms(r)]); start=null}});
   const tick=v=>{const d=new Date(v); return histHours>6?`${d.getMonth()+1}/${d.getDate()} ${d.toTimeString().slice(0,5)}`:d.toTimeString().slice(0,5)};
+  // X 軸固定「現在往前一個區間」，每秒平順往左捲（#51）
+  const xmax=Date.now(), xmin=xmax-histHours*3600e3;
+  // 重量、距離軸上限取整數級距，只在資料超出時才放大；換桶或換區間才重設，避免刻度每秒跳
+  const key=histBin+'|'+histHours;
+  const peak=f=>rows.reduce((m,r)=>{const v=f(r); return v==null?m:Math.max(m,v)},0);
+  const nice=v=>{if(v<=0) return 10; const e=10**Math.floor(Math.log10(v)), n=v/e; return (n<=1?1:n<=2?2:n<=5?5:10)*e};
+  const sticky=(name,v)=>{const cur=chart?.$key===key?chart.$max?.[name]:0; return Math.max(cur||0, nice(v*1.1))};
+  const gmax=sticky('g',peak(r=>r.weight_g)), cmmax=sticky('cm',peak(r=>r.dist_mm==null?null:r.dist_mm/10));
   const data={datasets:[
     {label:'滿度 %',data:pt(r=>r.fill_pct),borderColor:'#1f6f4a',backgroundColor:'rgba(31,111,74,.12)',fill:true,yAxisID:'pct'},
     {label:'重量 g',data:pt(r=>r.weight_g),borderColor:'#c98a00',backgroundColor:'#c98a00',yAxisID:'g',spanGaps:false},
     {label:'距離 cm',data:pt(r=>r.dist_mm==null?null:r.dist_mm/10),borderColor:'#2563eb',backgroundColor:'#2563eb',yAxisID:'cm',borderDash:[5,4]}]};
-  data.datasets.forEach(d=>Object.assign(d,{pointRadius:rows.length>120?0:2,borderWidth:2,tension:.25}));
+  data.datasets.forEach(d=>Object.assign(d,{pointRadius:rows.length>30?0:2,borderWidth:2,tension:0}));
   if(!chart){
     chart=new Chart(document.getElementById('hist'),{type:'line',data,plugins:[blockedBands],options:{
       animation:false,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
@@ -345,14 +355,17 @@ function drawHistory(rows){
         g:{position:'right',beginAtZero:true,ticks:{font:{size:10}},title:{display:true,text:'g'},grid:{drawOnChartArea:false}},
         cm:{position:'right',beginAtZero:true,display:innerWidth>=420,ticks:{font:{size:10}},title:{display:true,text:'cm'},grid:{drawOnChartArea:false}}}}});
   }else{chart.data=data; chart.options.scales.x.ticks.callback=tick}
+  const sc=chart.options.scales;
+  Object.assign(sc.x,{min:xmin,max:xmax}); sc.x.ticks.stepSize=histHours*3600e3/5; sc.g.max=gmax; sc.cm.max=cmmax;
+  chart.$key=key; chart.$max={g:gmax,cm:cmmax};
   chart.$blocked=bands; chart.$rows=rows;
-  chart.update();
+  chart.update('none');
 }
 async function loadHistory(signal){
   document.querySelectorAll('#range button').forEach(b=>b.classList.toggle('on',+b.dataset.h===histHours));
   if(!histBin) return;
   if(typeof Chart==='undefined'){document.getElementById('hist-wrap').innerHTML='<p class="empty">圖表載入失敗</p>';return}
-  const r=await fetch(`/api/bins/${encodeURIComponent(histBin)}/history?hours=${histHours}`,{headers:H,signal});
+  const r=await fetch(`/api/bins/${encodeURIComponent(histBin)}/history?hours=${histHours}&max_points=800`,{headers:H,signal});
   if(!r.ok||signal?.aborted) return;
   const rows=await r.json();
   if(signal?.aborted) return;
